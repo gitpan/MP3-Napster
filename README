@@ -1,0 +1,155 @@
+This is MP3::Napster, a pure-Perl interface to the Napster MP3 file
+search and distribution servers (www.napster.com).  With this module,
+you can connect to Napster servers, participate in online chat
+channels, search the Napster virtual library of MP3 sound files, and
+exchanged selected MP3s with other users.
+
+PREREQUISITES
+-------------
+
+This module makes extensive use of threads, which is an experimental
+Perl feature.  IN ORDER TO WORK AT ALL, THIS MODULE MUST BE RUN UNDER
+PERL 5.00503 OR HIGHER WITH THREADS ENABLED.
+
+Other prerequisites include:
+
+	Digest::MD5
+	MPEG::MP3Info
+
+You can find these modules on CPAN.  For your convenience, you may
+install them all with the Bundle::MP3 module, which also installs Doug
+MacEachern's Xmms modules.
+
+In order to play songs directly from the napster.pl example front end, 
+you must install the command-line MPEG-decoder mpg123 (or adapt the
+front end to use a different player).  mpg123 can be downloaded from:
+
+  http://ftp.tu-clausthal.de/pub/unix/audio/mpg123
+
+INSTALATION
+-----------
+
+To install:
+
+	% perl Makefile.PL
+	% make
+	% make test
+	% make install
+
+If "make test" fails, run "make test TEST_VERBOSE=1" and send the
+output to me, along with the output of perl -V.
+
+STABILITY
+---------
+
+The module was developed with Perl 5.00563 on a single processor Linux
+system.  It has been tested on a number of Linux configurations
+running versions of Perl between 5.00503 and 5.00567 and seems stable.
+It has also been tested on a two-processor SMP Sun Solaris system
+running 5.00567 and is *not* stable in that environment (it core dumps
+in short order).  Help tracking down the problem and testing on other
+platforms would be most appreciated.
+
+This module makes use of Thread::Queue.  On recent versions of Perl
+(5.00567), this module uses an older version of the "locked method"
+attribute.  If you get Thread::Queue-related syntax errors during
+testing, open up Thread/Queue.pm and change all subroutine declarations 
+that look like this:
+
+  sub enqueue : locked, method {
+
+to this:
+
+  sub enqueue : locked method {
+
+Life on the bleeding edge is no fun :-(
+
+DOCUMENTATION
+-------------
+
+The documentation is in POD format.  To read:
+
+	% perldoc MP3::Napster
+	% perldoc MP3::Napster::User
+	% perldoc MP3::Napster::Channel
+	% perldoc MP3::Napster::Song
+
+Additional documentation on the Napster protocol can be found in the
+file "napster.txt" that accompanies this distribution.
+
+APPLICATIONS
+------------
+
+napster.pl:
+
+This distribution includes an interactive line-oriented Napster client
+named napster.pl.  It will be installed into your scripts directory
+during make install.  You can get brief usage instructions by typing:
+
+	% napster.pl -h
+
+A typical connection will look like this:
+
+        % napster.pl -l 56K -p 6699 -d ~/mp3s
+
+Here you are specifying a link speed of 56K, an upload port of 6699,
+and a download directory of ~/mp3s.  This is all customizable, and has
+reasonable defaults.
+
+You will then be greeted with a login and password prompt:
+
+       [connecting...]
+       login: (type your nickname here)
+       password: *********
+
+If you authenticate correctly, you will see the message of the day.
+Now type "/help" to get a list of the commands you can issue to view
+and join channels, send public and private messages, search for files, 
+and initiate downloads.
+
+To register as a new user, run napster.pl with the -r flag.  It will
+prompt you for a nickname and a new password.
+
+An annoying problem with the napster.pl client is that output from
+chatty users can mix in with your commands as you are typing them.  I
+run the client in an Emacs shell to avoid this problem.  The client
+was developed mainly as a debugging tool and not as a full-fledged
+application.  Someone should really write a nice curses or Perl-Tk
+front end to this.
+
+
+simple_download.pl:
+
+You will find this script in the eg/ subdirectory of this
+distribution.  It illustrates how to write a batch script to search
+for some songs and download them, printing status messages as the
+download proceeds.  It is hard-coded to search for Beatles songs, but
+you can easily modify it to make it into a more general utility.
+
+
+miniserver.pl:
+
+This is a pure-Perl Napster server.  It is very limited compared to
+the real Napster server, since it keeps everything in memory and
+doesn't remember users from launch to launch.  Nevertheless, it
+implements most of the core Napster functionality, including chat,
+channels, private messages, and file transfer.
+
+I wrote it to support the regression tests.  Someone might want to
+make it into a real server by adding a persistent database backend.
+
+
+fix_attr.pl:
+
+This is a utility script that handles a change in the Perl subroutine
+declaration API during the transition to Perl 5.00563.  It is run
+automatically during "make" if needed.
+
+HELP
+----
+
+First ask for help in the Usenet newsgroup comp.lang.perl.modules.  If
+you get no help after a few days, feel free to contact me.
+
+Lincoln D. Stein
+lstein@cshl.org
