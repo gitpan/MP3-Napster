@@ -1,231 +1,256 @@
 package MP3::Napster;
 
 use strict;
-use IO::Socket;
-use IO::Select;
-use Thread qw(cond_wait cond_signal cond_broadcast async yield);
-use Thread::Queue;
-# use Thread::Signal;
+use vars qw($VERSION %FIELDS %RDONLY $LAST_ERROR);
+use base qw(MP3::Napster::IOLoop MP3::Napster::Base);
+use Carp 'croak';
+
+use MP3::Napster::MessageCodes;
+use MP3::Napster::UserCommand;
+use MP3::Napster::Server;
+use MP3::Napster::User;
+use MP3::Napster::Channel;
 use MP3::Napster::Registry;
 use MP3::Napster::Listener;
-use MP3::Napster::Channel;
-use MP3::Napster::Transfer;
-use MP3::Napster::Song;
-use MP3::Napster::User;
-use Errno 'EWOULDBLOCK';
-require Exporter;
-use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $DEBUG_LEVEL %FIELDS %RDONLY);
+use MP3::Napster::PeerToPeer;
+use MP3::Napster::TransferRequest;
+use Exporter;
 
-$SIG{PIPE} = 'IGNORE';
+$VERSION = '2.00';
 
-$VERSION = '0.96';
-$DEBUG_LEVEL = 0;
+%FIELDS = map {$_=>undef} qw(nickname email server channel registry 
+			     listener download_dir transfer_timeout attributes
+			     allow_setport
+			    );
+%RDONLY = map {$_=>undef} qw(channel_hash);
 
-@ISA = qw(Exporter MP3::Napster::Base);
+use constant DEFAULT_TIMEOUT => 300;  # five minutes to timeout transfers
 
-@EXPORT = qw(LINK_UNKNOWN LINK_14K LINK_28K LINK_33K LINK_56K LINK_64K
-	     LINK_128K LINK_CABLE LINK_DSL LINK_T1 LINK_T3 %LINK 
-	     ERROR LOGIN LOGIN_ACK NEW_LOGIN REGISTRATION_REQUEST
-	     REGISTRATION_ACK ALREADY_REGISTERED INVALID_NICKNAME
-	     LOGIN_ERROR LOGIN_OPTIONS I_HAVE REMOVE_FILE SEARCH
-	     SEARCH_RESPONSE SEARCH_RESPONSE_END DOWNLOAD_REQ
-	     DOWNLOAD_ACK BROWSE_REQUEST BROWSE_RESPONSE
-	     BROWSE_RESPONSE_END SERVER_STATS RESUME_REQUEST
-	     RESUME_RESPONSE RESUME_RESPONSE_END 
-	     WHOIS_RESPONSE WHOWAS_RESPONSE
-	     PART_CHANNEL JOIN_CHANNEL
-	     SEND_PUBLIC_MESSAGE PUBLIC_MESSAGE_RECVD PRIVATE_MESSAGE 
-	     JOIN_ACK USER_JOINS USER_DEPARTS CHANNEL_USER_ENTRY
-	     CHANNEL_USER_END CHANNEL_TOPIC LIST_CHANNELS
-	     CHANNEL_ENTRY MOTD 
-	     LINK_SPEED_REQUEST LINK_SPEED_RESPONSE
-	     PASSIVE_DOWNLOAD_REQ PASSIVE_UPLOAD_REQ
-	     CHANGE_LINK_SPEED CHANGE_EMAIL CHANGE_DATA_PORT
-	     PING PONG  SET_DATA_PORT
-	     UPLOADING UPLOAD_COMPLETE 
-	     DOWNLOADING DOWNLOAD_COMPLETE
-	     TRANSFER_STARTED TRANSFER_DONE TRANSFER_IN_PROGRESS
-	     GET_ERROR DATA_PORT_ERROR
-	     USER_OFFLINE USER_SIGNON USER_SIGNOFF INVALID_ENTITY
-	    );
-
-%FIELDS = map {$_=>undef} qw(ec registry abort server channel socket 
-			     nickname listener download_dir
-			     tagged_events disconnecting);
-%RDONLY = map {$_=>undef} qw(channel_hash main_thread event_thread listen_thread);
-
-# default server for best host
-use constant SERVER_ADDR => "208.184.216.223:8875";
-
-use MP3::Napster::Base ('LINK' => {
-				    LINK_UNKNOWN => 0,
-				    LINK_14K     => 1,
-				    LINK_28K     => 2,
-				    LINK_33K     => 3,
-				    LINK_56K     => 4,
-				    LINK_64K     => 5,
-				    LINK_128K    => 6,
-				    LINK_CABLE   => 7,
-				    LINK_DSL     => 8,
-				    LINK_T1      => 9,
-				    LINK_T3      => 10},
-			 'MESSAGES' => {
-					ERROR                => 0,
-					LOGIN                => 2,
-					LOGIN_ACK            => 3,
-					NEW_LOGIN            => 6,
-					REGISTRATION_REQUEST => 7,
-					REGISTRATION_ACK     => 8,
-					ALREADY_REGISTERED   => 9,
-					INVALID_NICKNAME     => 10,
-					PERMISSION_DENIED    => 11,
-					LOGIN_ERROR          => 13,
-					LOGIN_OPTIONS        => 14,
-					I_HAVE               => 100,
-					REMOVE_FILE          => 102,
-					SEARCH               => 200,
-					SEARCH_RESPONSE      => 201,
-					SEARCH_RESPONSE_END  => 202,
-					DOWNLOAD_REQ         => 203,
-					DOWNLOAD_ACK         => 204,
-					PRIVATE_MESSAGE      => 205,
-					GET_ERROR            => 206,
-					USER_SIGNON          => 209,
-					USER_SIGNOFF         => 210,
-					BROWSE_REQUEST       => 211,
-					BROWSE_RESPONSE      => 212,
-					BROWSE_RESPONSE_END  => 213,
-					SERVER_STATS         => 214,
-					RESUME_REQUEST       => 215,
-					RESUME_RESPONSE      => 216,
-					RESUME_RESPONSE_END  => 217,
-					DOWNLOADING          => 218,
-					DOWNLOAD_COMPLETE    => 219,
-					UPLOADING            => 220,
-					UPLOAD_COMPLETE      => 221,
-					JOIN_CHANNEL         => 400,
-					PART_CHANNEL         => 401,
-					SEND_PUBLIC_MESSAGE  => 402,
-					PUBLIC_MESSAGE_RECVD => 403,
-					INVALID_ENTITY       => 404,
-					JOIN_ACK             => 405,
-					USER_JOINS           => 406,
-					USER_DEPARTS         => 407,
-					CHANNEL_USER_ENTRY   => 408,
-					CHANNEL_USER_END     => 409,
-					CHANNEL_TOPIC        => 410,
-					PASSIVE_DOWNLOAD_REQ => 500,
-					UPLOAD_REQ           => 501,
-					LINK_SPEED_REQUEST   => 600,
-					LINK_SPEED_RESPONSE  => 601,
-					WHOIS_REQ            => 603,
-					WHOIS_RESPONSE       => 604,
-					WHOWAS_RESPONSE      => 605,
-					PASSIVE_UPLOAD_REQUEST => 607,
-					UPLOAD_ACK           => 608,
-					SET_DATA_PORT        => 613,
-					LIST_CHANNELS        => 617, # used both to start and end channel list
-					CHANNEL_ENTRY        => 618,
-					USER_OFFLINE         => 620,
-					MOTD                 => 621,
-					DATA_PORT_ERROR      => 626,
-					CHANGE_LINK_SPEED    => 700,
-					CHANGE_PASSWORD      => 701,
-					CHANGE_EMAIL         => 702,
-					CHANGE_DATA_PORT     => 703,
-					PING                 => 751,
-					PONG                 => 752,
-					USER_LIST_ENTRY      => 825,
-					LIST_USERS           => 830, # used both to start and end user list
-					# pseudo events
-					TRANSFER_STARTED     => 1024,
-					TRANSFER_DONE        => 1025,
-					TRANSFER_IN_PROGRESS => 1026,
-					# timeouts
-					TIMEOUT              => 2000,
-					DISCONNECTING        => 2001,
-				       }
-			);
-
-my %MULTILINE_CODE = (MOTD()               => 1,
-		      CHANNEL_USER_ENTRY() => 1,
-		      CHANNEL_ENTRY()      => 1,
-		      USER_LIST_ENTRY()    => 1,
-		      SEARCH_RESPONSE()    => 1,
-		      RESUME_RESPONSE()    => 1,
-		      BROWSE_RESPONSE()    => 1,
-		      PONG()               => 1,
-		     );
+###############################
+# codes to be considered errors
+###############################
 my %ERRORS = (
-	      ERROR()              => 1,
-	      LOGIN_ERROR()        => 1,
-	      GET_ERROR()          => 1,
-	      ALREADY_REGISTERED() => 1,
-	      INVALID_NICKNAME()   => 1,
-	      INVALID_ENTITY()     => 1,
-	      USER_OFFLINE()       => 1,
+	      ERROR,               1,
+	      LOGIN_ERROR,         1,
+	      GET_ERROR,           1,
+	      ALREADY_REGISTERED,  1,
+	      INVALID_NICKNAME,    1,
+	      INVALID_ENTITY,      1,
+	      USER_OFFLINE,        1,
 	     );
 
 my %MESSAGE_CONSTRUCTOR = (
-		   SEARCH_RESPONSE()      => sub  {MP3::Napster::Song->new_from_search(@_) },
-		   BROWSE_RESPONSE()      => sub  {MP3::Napster::Song->new_from_browse(@_) },
-		   CHANNEL_ENTRY()        => sub  {MP3::Napster::Channel->new_from_list(@_) },
-		   CHANNEL_USER_ENTRY()   => sub  {MP3::Napster::User->new_from_user_entry(@_) },
-                   USER_LIST_ENTRY()      => sub  {MP3::Napster::User->new_from_user_entry(@_) },
-                   WHOIS_RESPONSE()       => sub  {MP3::Napster::User->new_from_whois(@_)},
-                   WHOWAS_RESPONSE()      => sub  {MP3::Napster::User->new_from_whowas(@_)},
-                   USER_JOINS()           => sub   {MP3::Napster::User->new_from_user_entry(@_)},
-                   USER_DEPARTS()         => sub  {MP3::Napster::User->new_from_user_entry(@_)},
+			   SEARCH_RESPONSE,      => 'MP3::Napster::Song->new_from_search',
+			   BROWSE_RESPONSE,      => 'MP3::Napster::Song->new_from_browse',
+			   CHANNEL_ENTRY,        => 'MP3::Napster::Channel->new_from_list',
+			   CHANNEL_USER_ENTRY,   => 'MP3::Napster::User->new_from_user_entry',
+			   USER_LIST_ENTRY,      => 'MP3::Napster::User->new_from_user_entry',
+			   WHOIS_RESPONSE,       => 'MP3::Napster::User->new_from_whois',
+			   WHOWAS_RESPONSE,      => 'MP3::Napster::User->new_from_whowas',
+			   USER_JOINS,           => 'MP3::Napster::User->new_from_user_entry',
+			   USER_DEPARTS,         => 'MP3::Napster::User->new_from_user_entry',
 		  );
 
-my $LAST_ERROR = '';
+sub import {
+  my $pkg = shift;
+  my $callpkg = caller;
+  Exporter::export 'MP3::Napster::MessageCodes', $callpkg, @_;
+}
 
-# create a new MP3::Napster object, resolving the "best" server
-# address using the server server
+*send   = \&send_command;
+*listen = \&port;
+
 sub new {
-  my $pack = shift;
-  my $server = shift;  # caller can override automatic server detection
-  my $self = bless { error        => undef,
-		     server       => undef,
-		     socket       => undef,
-		     download_dir => '.',    # download directory
-		     download     => {},     # list of downloads
-		     upload       => {},     # list of uploads
-		     listener     => undef,  # incoming connections
-		     channel      => undef,  # current channel
-		     messages     => {},     # incoming data, sorted by result code
-		     ec           => '',     # last received result code
-		     callbacks    => {},     # user callback subroutines
-		     tagged_events=> {},     # events that will cause a cond_signal
-		     channel_hash => {},     # keep track of channels user is registered for
-		     send_queue      => Thread::Queue->new(),  # send queue (outgoing)
-		     event_queue     => Thread::Queue->new(),  # event queue (incoming)
-		     main_thread     => Thread->self,
-		     send_thread     => undef,
-		     receive_thread  => undef,
-		     event_thread    => undef,
-		     listen_thread   => undef,
-		     other_threads   => [],
-		     registry        => undef,  # registry of local songs
-		   },$pack;
-  if ($server) {
-    $self->server($server);
-  } else {
-    return unless $self->fetch_server;
+  my $class       = shift;
+
+  my ($server,$metaserver,$widget,$tk);
+  if (@_ == 1) {
+    $server = shift;   # caller can override automatic server detection
+  } elsif (@_ >= 2) {
+    my %opt = @_;
+    $server     = $opt{'-server'}     || $opt{'server'};
+    $widget     = $opt{'-tkmain'}     || $opt{'tkmain'};
+    $metaserver = $opt{'-metaserver'} || $opt{'metaserver'};
   }
-  return unless $self->connect();
-  $self->registry(MP3::Napster::Registry->new($self));
-  return $self;
+  if ($widget) {
+    require MP3::Napster::TkPoll;
+    $tk = MP3::Napster::TkPoll->new($widget);
+  }
+
+  my $self        = $class->SUPER::new($tk) or return;
+
+  # create and store the server object
+  if (my $servobj = MP3::Napster::Server->new($server,$self,$metaserver)) {
+    $self->server($servobj);
+  } else {
+    $self->disconnect;
+    return;
+  }
+
+  # create and store the file registry
+  my $registry = MP3::Napster::Registry->new($self) or return;
+  $self->registry($registry);
+
+  $self->{channel_hash} = {};
+  $self->download_dir('.'); # default download directory
+  $self->transfer_timeout(DEFAULT_TIMEOUT); # default timeout for transfers
+  $self->allow_setport(0);                  # don't allow setport responses
+  $self->install_default_callbacks;
+  $self;
+}
+
+# install STDIN command processor
+sub command_processor {
+  my $self = shift;
+  my ($callback,$fh) = @_;
+  ref($callback) or croak("Usage: \$napster-command_processor(\$coderef,\$filehandle)");
+  $fh ||= \*STDIN;
+  return MP3::Napster::UserCommand->new(in=>$fh,eventloop=>$self,callback=>$callback);
+}
+
+sub port {
+  my $self = shift;
+  my $listener = $self->listener;
+  if (@_) {
+    my $port = shift;
+    $listener->close if $listener;
+    $listener = MP3::Napster::Listener->new($self,$port)
+      or return $self->error("can't create listener");
+    $self->listener($listener);
+    $self->send_command(CHANGE_DATA_PORT,$listener->port);
+  }
+  return $listener ? $listener->port : 0;
+}
+
+sub install_default_callbacks {
+  my $self = shift;
+
+  # successful login
+  $self->callback(LOGIN_ACK, sub {
+		    my $self  = shift;
+		    my $email = shift;
+		    $self->email($email);
+		    $self->send_command(CHANGE_DATA_PORT,$self->port) if $self->port > 0;
+		  });
+
+  # successful registration
+  $self->callback(REGISTRATION_ACK, sub {
+		    my $self = shift;
+		    my $att = $self->attributes or return;
+		    my $password = $att->{password};
+		    my $nickname = $self->nickname;
+		    my $version = __PACKAGE__ . " v$VERSION";
+		    my $message = qq($nickname $password $att->{port} "$version" $att->{link} $att->{email});
+		    warn "first login for $nickname...\n" if $self->debug;
+		    $self->send(NEW_LOGIN,$message);
+		  });
+
+  # channel enrollment
+  $self->callback(JOIN_ACK,sub {
+		    my $self = shift;
+		    my ($code,$chan) = @_;
+		    warn "JOIN_ACK: $chan\n" if $self->debug > 0;
+		    $self->channel_hash->{"\u\L$chan"} = $chan;
+		    $self->channel($chan);
+		  });
+
+  # set data port message (used by server when it can't get in)
+  # NOTE: this might be a security hole -- needs some thought
+  $self->callback(SET_DATA_PORT, sub { my $self = shift;
+				       my ($code,$newport) = @_;
+				       return unless $self->allow_setport;
+				       return if $newport == $self->port;
+				       warn "Set data port: $newport" if $self->debug;
+				       $self->port($newport);
+				     });
+
+  # ping/pong
+  $self->callback(PING,sub { 
+		    my $self = shift;
+		    my ($code,$data) = @_;
+		    $self->send_command(PONG,$data) }
+		 );
+
+  # Handle upload requests when we are not firewalled and the remote
+  # user will make an incoming connection to us.
+  # We check our registry to see if the sharename is
+  # recognized and send an ACK if so.  Otherwise, send a GET_ERROR
+  $self->callback(PASSIVE_UPLOAD_REQUEST,
+		  sub { my $self = shift;
+			my ($code,$msg) = @_;
+			my ($nick,$sharename) = $msg =~ /^(\S+) "([^\"]+)"/;
+			return unless $nick;
+			warn "processing passive upload request from $nick for $sharename\n" if $self->debug > 0;
+			my $song = $self->registry->song($sharename);
+			return $self->send_command(PERMISSION_DENIED,$msg) unless defined $song;
+			if ($self->port > 0 
+			    and (my $u = MP3::Napster::TransferRequest->new_upload($self,
+										   MP3::Napster::User->new($self,$nick),
+										   $song,
+										   $song->path))) {
+			  $u->status('queued');
+			}
+			$self->send_command(UPLOAD_ACK,$msg)
+		      });
+
+  # Handle upload requests when we are behind a firewall and are expected
+  # to make an (active) outgoing connection to the peer.
+  # We check our registry to see if the sharename is recognized
+  # and initiate an outgoing connection if so.
+  # Otherwise we send a PERMISSION_DENIED
+  $self->callback(UPLOAD_REQUEST,
+		  sub {
+		    my $self = shift;
+		    my ($code,$msg) = @_;
+		    if (my ($nick,$ip,$port,$sharename,$md5,$speed) 
+			= $msg =~ /^(\S+) (\d+) (\d+) "([^\"]+)" (\S+) (\d+)/) {
+		      warn "processing active upload request from $nick for $sharename" if $self->debug > 0;
+		      if (my $song = $self->registry->song($sharename)) {
+
+			# turn the IP address into standard dotted quad notation
+			my $addr =  join '.',unpack("C4",(pack "V",$ip));  
+			my $upload = MP3::Napster::TransferRequest->new_upload($self,
+									       MP3::Napster::User->new($self,$nick,$speed),
+									       $song,
+									       $song->path);
+			$upload->peer("$addr:$port");
+			MP3::Napster::PeerToPeer->new($upload,$self);
+			warn "starting active transfer" if $self->debug > 0;
+			return;
+		      }
+		    }
+		    # if we don't share this file...
+		    $self->send_command(PERMISSION_DENIED,$msg);
+		  }
+		 );
+
+  # This is a type of delayed error that occurs when we've started
+  # a download, but the remote user goes offline
+  $self->callback(USER_OFFLINE,
+		  sub { my $self = shift;
+			my ($code,$msg) = @_;
+			my ($nick,$sharename) = $msg =~ /^(\S+) "([^\"]+)"/;
+			if (my $download = $self->downloads($nick,$sharename)) {
+			  $download->status('user offline');
+			  $download->abort;
+			}
+		      }
+		 );
+}
+
+sub event  {
+  my $ec = shift->{ec};
+  $MESSAGES{$ec} || "UNKNOWN CODE $ec";
 }
 
 # get/set last error
 sub error {
   my $self = shift;
-  lock $self if ref $self;
-  lock $LAST_ERROR;
   if (@_) {  # setting
-    my $error = shift;
-    warn "ERROR: $error\n" if $DEBUG_LEVEL > 1;
+    my $error = join '',@_;
+    $error =~ s/\n$//;
+    $error =~ s/ at.*line \d+\.//;
+    warn "ERROR: $error\n" if $self->debug > 1;
     $LAST_ERROR    = $error;
     $self->{error} = $error if ref $self;
     return;  # deliberately return undef here
@@ -233,49 +258,9 @@ sub error {
   return ref($self) ? $self->{error} : $LAST_ERROR;
 }
 
-# set a timer
-sub timer : locked method {
+sub send_command {
   my $self = shift;
-  my $timeout  = shift;
-  my $start = time;
-
-  if ($timeout > 0) {
-    my $timer_thread = async {
-      Thread->self->detach;   # no need to join
-      while ($timeout > (time - $start)) {
-	select(undef,undef,undef,1);                        # go to sleep for 1 second
-	{
-	  lock $self;
-	  return unless $self->{timeout}{Thread->self->tid};  # while we were sleeping, our timer was removed
-	}
-      }
-      # we've timed out
-      warn "timeout!" if $DEBUG_LEVEL > 0;
-      my $tid = Thread->self->tid;
-      lock $self->{ec};
-      $self->ec(TIMEOUT);
-      $self->message(TIMEOUT,$tid);
-      cond_signal $self->{ec};
-    };
-    $self->{timeout}{$timer_thread->tid} = 1;
-    return $timer_thread->tid;  # return the timer number
-  }
-}
-
-# clear a timer
-sub clear_timer : locked method {
-  my $self = shift;
-  my $timer = shift;
-  return delete $self->{timeout}{$timer} if defined($timer);
-  delete $self->{timeout};
-}
-
-# get/set the last result for a particular result code
-sub message : locked method {
-  my $self = shift;
-  my $ec = shift;
-  return @_ ? $self->{messages}{$ec} = shift
-            : $self->{messages}{$ec};
+  $self->server->send_command(@_);
 }
 
 # get event as a number
@@ -283,173 +268,41 @@ sub event_code {
   return shift->ec;
 }
 
-# get event as a string
-sub event : locked method {
-  return $MESSAGES{shift->ec};
-}
-
-# return the listening port
-sub port : locked method {
-  return 0 unless my $l = $_[0]->listener;
-  return $l->port+0;
-}
-
-# connect to the server
-sub connect : locked method {
+# oldstyle API
+sub wait_for {
   my $self = shift;
-  my $server = $self->server;
-  return $self->error('no server address defined') unless $server;
-
-  warn "Trying to connect to $server...\n" if $DEBUG_LEVEL > 0;
-  my $sock = IO::Socket::INET->new($server);
-  return $self->error("connection refused") unless $sock;
-  $self->socket($sock);
-
-  warn "Connected: starting event thread...\n" if $DEBUG_LEVEL > 0;
-  return unless $self->{event_thread} = Thread->new(\&process_event,$self);
-
-  warn "Starting send thread...\n" if $DEBUG_LEVEL > 0;
-  return unless $self->{send_thread} = Thread->new(\&send_loop,$self);
-
-  # install the default callbacks
-  $self->install_default_callbacks;
-
-  warn "Starting receive thread..." if $DEBUG_LEVEL > 0;
-  return unless $self->{receive_thread} = Thread->new(\&receive_loop,$self);
-
-  return $self->socket;
+  my ($event,$timeout) = @_;
+  return unless $self->pollobject->can('poll');
+  my $events = ref($event) eq 'ARRAY' ? $event : [$event];
+  my ($ec,@msg) = $self->run_until($events,$timeout) 
+    or return $self->error("timeout while waiting for ",$MESSAGES{$events->[0]});
+  return wantarray ? ($ec,@msg) : $ec;
 }
 
-# Mark a file as being available for sharing.
-sub share {
+sub send_and_wait {
   my $self = shift;
-  my ($path,$cache) = @_;
-  return $self->error('please log in') unless $self->nickname;
-  return unless my $reg = $self->registry;
-  $reg->share_file($path,$cache);
+  my ($command,$message,$event,$timeout) = @_;
+  $self->send_command($command,$message);
+  $self->wait_for($event,$timeout);
 }
 
-# Start the listening (upload and passive transfer) thread going
-sub listen : locked method {
+
+sub modify_event {
   my $self = shift;
-  my $port = shift;
-  return $self->error("can't create listener")
-    unless $self->listener(MP3::Napster::Listener->new($self));
-  if (my $t = $self->listener->start($port)) {
-    $self->{listen_thread} = $t;
-    $self->send(CHANGE_DATA_PORT,$self->port);
-    return $self->port;
+  my ($ec,$body) = @_;
+  my $sub = $MESSAGE_CONSTRUCTOR{$$ec} or return;
+  if (ref($sub) eq 'CODE') {  # oldstyle function call
+    $$body = $sub->($self,$$body);
   } else {
-    $self->listener(undef);
-    return;
+    my ($class,$method) = split '->',$sub;
+    $$body = $class->$method($self,$$body);
   }
 }
 
-# disconnect
-sub disconnect {
-  my $self = shift;
-  my $wait = shift;
-  
-  return if $self->disconnecting;
-  return unless my $sock = $self->socket;
-  $self->disconnecting(1);
 
-  warn "disconnect(): waiting on pending transfers\n" if $DEBUG_LEVEL > 0;
-  $self->wait_for_file_transfers($wait||0);
-
-  warn "disconnect(): warning threads that we're done\n" if $DEBUG_LEVEL > 0;
-  $self->abort(1);
-
-  warn "disconnect(): warning listener that we're done\n"  if $DEBUG_LEVEL > 0;
-  $self->listener->done(1) if $self->listener;
-
-  warn "disconnect(): shutting down send thread\n" if $DEBUG_LEVEL > 0;
-  $self->{send_queue}->enqueue(undef);
-
-  for my $t ( @{$self}{qw(send_thread receive_thread event_thread listen_thread)},
-	      @{$self->{other_threads}} ) {
-    next if !defined($t) || $t->equal(Thread->self);
-    $t->eval;
-    warn $@ if $@;
-    undef $self->{$t};
-  }
-
-  $self->socket(undef);
-  warn "socket closed" if $DEBUG_LEVEL > 0;
-}
-
-sub connected : locked method {
-  return unless my $sock = $_[0]->socket;
-  return $sock->connected;
-}
-
-sub add_thread : locked method {
-  my $self = shift;
-  return unless my $t = shift;
-  push(@{$self->{other_threads}},$t);
-}
-
-# wait and clean up file transfers
-sub wait_for_file_transfers {
-  my $self = shift;
-  my $wait = shift;
-  my $time = time;
-
-  my %old_status = map {$_ => $_->statusString} $self->transfers;
-
-  while ( (my @t = $self->transfers) and 
-	  (my $left = $wait-(time-$time)) > 0 ) {
-
-    warn "waiting for ",scalar(@t)," transfers to finish, time left = $left...\n" if $DEBUG_LEVEL > 0;
-    $self->wait_for( TRANSFER_DONE,$left < 30 ? $left : 30 );
-
-    # check whether the status has changed
-    # kill any whose status has not changed in 1 minute's time
-    foreach ($self->transfers) {
-      if ($_->statusString eq $old_status{$_}) {
-	warn "$_: status hasn't changed, so killing it\n" if $DEBUG_LEVEL > 0;
-	$_->done(1);
-	delete $old_status{$_};
-	next;
-      }
-      $old_status{$_} = $_->statusString;
-    }
-
-  }
-  # out of time
-  if (my @t = $self->transfers) {
-    warn "times up! killing ",scalar(@t)," old file transfers\n" if $DEBUG_LEVEL > 0;
-    for my $t (@t) { 
-      $t->done(1);
-      $self->wait_for(TRANSFER_DONE,5);  # give it 5 seconds
-    }
-  }
-
-}
-
-# reconnect
-sub reconnect {
-  my $self = shift;
-  $self->disconnect && $self->connect;
-}
-
-# send a public message
-sub public_message {
-  my $self = shift;
-  my $mess = shift;
-  my $channel = shift || $self->channel;
-  return $self->error('no channel selected') unless $channel;
-  $self->send(SEND_PUBLIC_MESSAGE,$channel." $mess");
-  1;
-}
-
-# send a private message
-sub private_message {
-  my $self = shift;
-  my ($nick,$mess) = @_;
-  $self->send(PRIVATE_MESSAGE,"$nick $mess");
-  1;
-}
+###########################################################
+##################### high level methods ###################
+###########################################################
 
 # login -- returns e-mail address of nickname if login is successful.
 # otherwise stores error message in error(); possible error messages include
@@ -458,17 +311,31 @@ sub login {
   my $self = shift;
   my ($nickname,$password,$link_type,$port) = @_;
   $link_type ||= LINK_UNKNOWN;
-  $port   = 0 unless defined($port) and $port > 0 and $port < 65534;
-  my $version = __PACKAGE__ . " v$VERSION";
-  my $message = qq($nickname $password $port "$version" $link_type);
-  warn "trying to login...\n" if $DEBUG_LEVEL > 0;
-
-  lock $self->{ec};
-  return $self->error('timeout waiting for login')
-    unless my ($ec,$msg) = $self->send_and_wait(LOGIN,$message,[LOGIN_ACK,INVALID_ENTITY,LOGIN_ERROR,ERROR],60);
-  return unless $ec == LOGIN_ACK;
+  $port   = 0 unless defined($port);
+  # my $version = __PACKAGE__ . " v$VERSION";
+  my $version = 'v2.0';
+  my $message = qq($nickname $password 0 "$version" $link_type);
   $self->nickname($nickname);
-  return $self->message(LOGIN_ACK);
+  warn "trying to login...\n" if $self->debug > 0;
+
+  return unless my ($ec,$msg) = $self->send_and_wait(LOGIN,
+						     $message,
+						     [LOGIN_ACK,INVALID_ENTITY,LOGIN_ERROR,ERROR],60);
+  return $self->error($msg) unless $ec == LOGIN_ACK;
+  $self->port($port) if $port;
+  return $msg;
+}
+
+# immediate disconnect method
+sub disconnect {
+  my $self = shift;
+  $self->registry(undef);
+  if (my $s = $self->server) {
+    $s->close;
+    $self->server(undef);
+  }
+  $_->done(1) foreach $self->transfers;
+  $self->SUPER::disconnect;
 }
 
 # called to register a new nickname
@@ -494,26 +361,200 @@ sub register {
   $att->{link}      ||= LINK_UNKNOWN;
   $att->{port}      ||= 0;
   $att->{email}     ||= 'anon@napster.com';
+  $att->{password}    = $password;
 
-  warn "requesting permission to register $nickname" if $DEBUG_LEVEL > 0;
+  warn "requesting permission to register $nickname" if $self->debug;
+  $self->attributes($att);
+  $self->nickname($nickname);
   my ($ec,$msg) = $self->send_and_wait(REGISTRATION_REQUEST,$nickname,
-				       [REGISTRATION_ACK,ALREADY_REGISTERED,INVALID_NICKNAME],20);
-  return unless $ec == REGISTRATION_ACK;
+				       [LOGIN_ACK,ALREADY_REGISTERED,INVALID_NICKNAME],20);
+  return unless $ec == LOGIN_ACK;
+  $self->port($att->{port}) if defined($att->{port});
+  $self->new_info;
+  $msg;
+}
+
+sub new_login {
+  my $self = shift;
+  my $att = $self->attributes;
+  my $password = $att->{password};
+  my $nickname = $self->nickname;
 
   my $version = __PACKAGE__ . " v$VERSION";
-  my $message = qq($nickname $password $att->{port} "$version" $att->{link} $att->{email});
-  warn "logging in under $nickname...\n" if $DEBUG_LEVEL > 0;
-  return unless  ($ec,$msg) = $self->send_and_wait(NEW_LOGIN,$message,LOGIN_ACK,20);
+  my $message = qq($nickname $password 0 "$version" $att->{link} $att->{email});
+  warn "logging in under $nickname...\n" if $self->debug;
+  return unless my ($ec,$msg) = $self->send_and_wait(NEW_LOGIN,$message,LOGIN_ACK,20);
   return unless $ec == LOGIN_ACK;
+}
 
-  $self->nickname($nickname);
-  warn "sending new user data\n" if $DEBUG_LEVEL > 0;
+sub new_info {
+  my $self = shift;
+  my $att = $self->attributes;
+  warn "sending new user data\n" if $self->debug;
   $att->{$_} ||= '' foreach qw(name address city state phone age education);
   return unless $self->send(LOGIN_OPTIONS,
 			    sprintf("NAME:%s ADDRESS:%s CITY:%s STATE:%s PHONE:%s AGE:%s INCOME:%s EDUCATION:%s",
 				    @{$att}{qw(name address city state phone age education)}));
-  return $msg;
+  1;
 }
+
+# change some registration information
+# can provide:
+#     link     => $new_link_speed,
+#     password => $new_password;
+#     email    => $new_email;
+sub change_registration {
+  my $self = shift;
+  my %attributes = @_;
+  $self->send_command(CHANGE_LINK_SPEED,$attributes{link})   if defined $attributes{link};
+  $self->send_command(CHANGE_PASSWORD,$attributes{password}) if defined $attributes{password};
+  $self->send_command(CHANGE_EMAIL,$attributes{email})       if defined $attributes{email};
+  1;
+}
+
+
+##########################################################################
+# Channel commands
+##########################################################################
+
+# return list of channels as an array
+sub channels {
+  my $self = shift;
+  my $ec = $self->send_and_wait(LIST_CHANNELS,'',LIST_CHANNELS,20) || return;
+  return $self->events(CHANNEL_ENTRY);
+}
+
+# join a channel
+sub join_channel {
+  my $self    = shift;
+  my $channel = shift;
+  $channel = ucfirst(lc $channel);
+  if (my $c = $self->channel_hash->{$channel}) { # already belongs to this one
+    $self->channel($c);  # make it primary
+    return $c;
+  }
+
+  return unless my ($ec,$msg) = $self->send_and_wait(JOIN_CHANNEL,$channel,[INVALID_ENTITY,JOIN_ACK],10);
+  return unless $ec == JOIN_ACK;
+  return $self->channel;
+}
+
+# part a channel
+sub part_channel {
+  my $self    = shift;
+  my $channel = shift;
+  $channel = ucfirst(lc $channel);
+  return $self->error("not a member of $channel")
+    unless $self->channel_hash->{$channel};
+  $self->send(PART_CHANNEL,$channel);
+  delete $self->channel_hash->{$channel};
+  if (my @channels = sort keys %{$self->channel_hash}) {
+    $self->channel($self->{channel_hash}{$channels[0]});
+  } else {
+    $self->channel(undef);
+  }
+  1;
+}
+
+# list channels user is member of
+sub enrolled_channels {
+  my $self = shift;
+  return keys %{$self->channel_hash};
+}
+
+
+##########################################################################
+# User commands
+##########################################################################
+
+# return users in current channel
+sub users {
+  my $self = shift;
+  my $channel = shift || $self->channel;
+  return unless $channel;
+  return unless $self->send_and_wait(LIST_USERS,$channel,LIST_USERS,10);
+  return $self->events(USER_LIST_ENTRY);
+}
+
+# get whois information
+sub whois {
+  my $self = shift;
+  my $nick = shift;
+  return unless my ($ec,$message) = 
+    $self->send_and_wait(WHOIS_REQ,$nick,
+			 [WHOIS_RESPONSE,WHOWAS_RESPONSE,INVALID_ENTITY],10);
+  return $message if $ec == WHOIS_RESPONSE or $ec == WHOWAS_RESPONSE;
+  return;
+}
+
+# ping a user, return true if pingable
+sub ping {
+  my $self = shift;
+  my ($user,$timeout) = @_;
+  return $self->ping_multi($user,$timeout) if ref $user eq 'ARRAY';
+  warn "ping(): waiting for a PONG from $user (timeout $timeout)\n" if $self->debug > 0;
+  return unless my ($ec,@message) = 
+    $self->send_and_wait(PING,$user,[PONG,INVALID_ENTITY,USER_OFFLINE],$timeout || 5);
+  return unless $ec == PONG;
+  return grep {lc($user) eq lc($_)} @message;
+}
+
+# ping multiple users, returning a hash of their response times
+sub ping_multi {
+  my $self = shift;
+  my ($users,$timeout) = @_;
+  die "usage ping_multi(\\\@users,\$timeout)" unless ref $users eq 'ARRAY';
+  $timeout ||= 20;  # twenty second max wait
+
+  # keep track of the pongs we receive
+  my %pongs;
+  my $pending = @$users;
+  my @events = (PONG,INVALID_ENTITY,USER_OFFLINE);
+  my $start = time;
+
+  my $cb = sub {
+    my $self = shift;
+    my ($code,$msg) = @_;
+    $pending--;
+    $pongs{$msg}=time-$start if $code == PONG;
+  };
+
+  $self->callback($_,$cb)       foreach @events;
+  $self->send_command(PING,$_)  foreach @$users;
+
+  while ((my $remaining = $timeout - (time-$start)) > 0 and $pending > 0) {
+    $self->wait_for(\@events,$remaining);
+  }
+
+  $self->delete_callback($_,$cb) foreach @events;
+  return \%pongs;
+}
+
+##########################################################################
+# Message Commands
+##########################################################################
+
+# send a public message
+sub public_message {
+  my $self = shift;
+  my $mess = shift;
+  my $channel = shift || $self->channel;
+  return $self->error('no channel selected') unless $channel;
+  $self->send_command(SEND_PUBLIC_MESSAGE,$channel." $mess");
+  1;
+}
+
+# send a private message
+sub private_message {
+  my $self = shift;
+  my ($nick,$mess) = @_;
+  $self->send_command(PRIVATE_MESSAGE,"$nick $mess");
+  1;
+}
+
+##########################################################################
+# Song search commands
+##########################################################################
 
 # Initiate a search and return a list of MP3::Napster::Song objects
 # arguments:
@@ -562,165 +603,60 @@ sub search {
   $query .= qq(LINESPEED $attrs{linespeed} ) if $attrs{linespeed};
   $query .= qq(BITRATE $attrs{bitrate} ) if $attrs{bitrate};
   $query .= qq(FREQ $attrs{frequency} ) if $attrs{frequency};
-  warn "search query = $query" if $DEBUG_LEVEL > 0;
-  
-  # clear the state variable for the search response and trigger a new search
-  lock $self->{ec};
-  $self->error('');
-  $self->message(SEARCH_RESPONSE,[]);
-  my $ec = $self->send(SEARCH,$query);
-  return unless $self->wait_for(SEARCH_RESPONSE_END,60); # allow 60 seconds to get result
+#  $query .= qq(LOCAL_ONLY);
+  warn "search query = $query" if $self->debug > 0;
+
+  my $ec = $self->send_command(SEARCH,$query);
+  my $timeout = $attrs{timeout} || 20;
+  $self->wait_for(SEARCH_RESPONSE_END,$timeout); # allow $timeout seconds to get result
+
   # return the search results
-  return @{$self->message(SEARCH_RESPONSE)};
+  return $self->events(SEARCH_RESPONSE);
 }
 
 # browse a user's files
 sub browse {
   my $self = shift;
   my $nick = shift;
-  $self->error('');
-  # clear the state variable for the search response and trigger a new search
-  lock $self->{ec};
-  $self->message(BROWSE_RESPONSE,[]);
-  return $self->error('timeout waiting for browse response')
-    unless my ($ec,$msg) = $self->send_and_wait(BROWSE_REQUEST,$nick,[BROWSE_RESPONSE_END,USER_OFFLINE,INVALID_ENTITY],30);
+  return
+    unless my ($ec,$msg) = 
+      $self->send_and_wait(BROWSE_REQUEST,$nick,
+			   [BROWSE_RESPONSE_END,USER_OFFLINE,INVALID_ENTITY],30);
   return $self->error('user not online') unless $ec == BROWSE_RESPONSE_END;
-  return @{$self->message(BROWSE_RESPONSE)};
+  return $self->events(BROWSE_RESPONSE);
 }
 
-# get whois information
-sub whois {
+##########################################################################
+# Registration of shared files
+##########################################################################
+
+# Mark a file as being available for sharing.
+sub share {
   my $self = shift;
-  my $nick = shift;
-  return unless my ($ec,$message) = $self->send_and_wait(WHOIS_REQ,$nick,
-							 [WHOIS_RESPONSE,WHOWAS_RESPONSE,INVALID_ENTITY],10);
-  return $message if $ec == WHOIS_RESPONSE or $ec == WHOWAS_RESPONSE;
-  return;
+  my ($path,$cache) = @_;
+  return $self->error('please log in') unless $self->nickname;
+  return unless my $reg = $self->registry;
+  $reg->share_file($path,$cache);
 }
 
-# return server stats as a three-element list
-sub stats {
+# mark an entire directory as being available for sharing
+sub share_dir {
   my $self = shift;
-  $self->wait_for(SERVER_STATS) unless defined $self->message(SERVER_STATS);
-  return split /\s+/,$self->message(SERVER_STATS);
-}
-
-# return list of channels as an array
-sub channels {
-  my $self = shift;
-  lock $self->{ec};
-  $self->message(CHANNEL_ENTRY,[]);
-  my $ec = $self->send_and_wait(LIST_CHANNELS,'',LIST_CHANNELS,20);
-  return @{$self->message(CHANNEL_ENTRY)};
-}
-
-# join a channel
-sub join_channel {
-  my $self    = shift;
-  my $channel = shift;
-  $channel = ucfirst(lc $channel);
-  if ($self->channel_hash->{$channel}) { # already belongs to this one
-    $self->channel($channel);  # make it primary
-    return $self->channel_hash->{$channel};
+  my ($dir,$cache) = @_;
+  $cache = 1 unless defined $cache;
+  opendir (S,$dir) or return $self->error("Couldn't open directory $dir: $!");
+  my @share;
+  while (my $song = readdir(S)) {
+    next unless $song =~ /\.mp3$/;
+    my $s = $self->share("$dir/$song",$cache);
+    push @share,$s if $s;
   }
-
-  $self->message(CHANNEL_USER_ENTRY,[]); # clear the channel user entry
-  return $self->error('timeout') 
-    unless my ($ec,$msg) = $self->send_and_wait(JOIN_CHANNEL,$channel,[INVALID_ENTITY,JOIN_ACK],10);
-  return unless $ec == JOIN_ACK;
-  return $self->channel($channel);
+  @share;
 }
 
-# part a channel
-sub part_channel {
-  my $self    = shift;
-  my $channel = shift;
-  $channel = ucfirst(lc $channel);
-  return $self->error("not a member of $channel")
-    unless $self->channel_hash->{$channel};
-  $self->send(PART_CHANNEL,$channel);
-  delete $self->channel_hash->{$channel};
-  my @channels = sort keys %{$self->channel_hash};
-  $self->channel($channels[0]);
-  1;
-}
-
-# list channels user is member of
-sub enrolled_channels : locked method {
-  my $self = shift;
-  return keys %{$self->channel_hash};
-}
-
-# return users in current channel
-sub users {
-  my $self = shift;
-  my $channel = shift || $self->channel;
-  return unless $channel;
-  lock $self->{ec};
-  $self->message(USER_LIST_ENTRY,[]);
-  return unless $self->send_and_wait(LIST_USERS,$channel,LIST_USERS,10);
-  return @{$self->message(USER_LIST_ENTRY)};
-}
-
-# ping a user, return true if pingable
-sub ping {
-  my $self = shift;
-  my ($user,$timeout) = @_;
-  return $self->ping_multi($user,$timeout) if ref $user;
-  warn "ping(): waiting for a PONG from $user (timeout $timeout)\n" if $DEBUG_LEVEL > 0;
-  return unless my ($ec,$message) = $self->send_and_wait(PING,$user,[PONG,INVALID_ENTITY,USER_OFFLINE],$timeout || 5);
-  return unless $ec == PONG;
-  return grep {lc($user) eq lc($_)} @$message;
-}
-
-# ping multiple users, returning their response time within a threshold
-sub ping_multi {
-  my $self = shift;
-  my ($users,$timeout) = @_;
-  die "usage ping_multi(\\\@users,\$timeout)" unless ref $users eq 'ARRAY';
-  $timeout ||= 5;  # five second wait max
-  my $time = time;
-
-  lock $self->{ec};
-  $self->message(PONG,[]);  # clear list
-
-  my $pongs = {};
-  my $pending = { map {lc $_=>1} @$users };
-  my @events = (PONG,INVALID_ENTITY,USER_OFFLINE);
-
-  my $callback = sub {
-    my ($nap,$msg) = @_;
-    my $ec = $nap->ec;
-    my $user = $msg;
-    $user = $1 if $ec == INVALID_ENTITY && $msg =~ /ping failed, (\S+) is not online/;
-    delete $pending->{lc $user};
-    return unless $nap->ec == PONG;
-    $pongs->{$user} = time-$time;
-  };
-  $self->callback($_,$callback) foreach @events;
-
-  # set the timer
-  my $timer = $self->timer($timeout);
-
-  # send out the pings
-  $self->send(PING,$_) foreach @$users;
-
-  # intercept timeouts and PONGs
-  $self->tagged_events( {TIMEOUT()=>1,map {$_=>1} @events} );
-
-  while ( 1 ) {
-    cond_wait $self->{ec};
-    last if $self->message(TIMEOUT) && $self->message(TIMEOUT) == $timer;
-    last unless %$pending;
-  }
-
-  $self->clear_timer;
-  $self->tagged_events({});
-
-  $self->delete_callback($_,$callback) foreach @events;  # get rid of the callback
-
-  return $pongs;
-}
+##########################################################################
+# Downloads/uploads
+##########################################################################
 
 # Request a download.  Provide an MP3::Napster::Song object, and a path or filehandle
 # to save the data to.
@@ -736,80 +672,67 @@ sub download {
   return $self->error("can't download from yourself") if $self->nickname eq $nickname;
 
   $message = qq($nickname "$path");
-  lock $self->{ec};
 
   #timeout of 15 secs to get an ack
-  return $self->error('timeout waiting for download ack') 
+  return
     unless ($ec,$message) = $self->send_and_wait(DOWNLOAD_REQ,
 						 $message,
 						 [DOWNLOAD_ACK,GET_ERROR,
 						  ERROR,USER_OFFLINE],15);
-  return unless $ec == DOWNLOAD_ACK;
-  
+  return $self->error($self->event) unless $ec == DOWNLOAD_ACK;
+
   # The server claims that we can download now.  The message contains the
   # IP address and port to fetch the file from.
   my ($nick,$ip,$port,$filename,$md5,$linespeed) = 
     $message =~ /^(\S+) (\d+) (\d+) "([^\"]+)" (\S+) (\d+)/;
 
-  warn "download message = $message\n" if $DEBUG_LEVEL > 0;
-  
+  warn "download message = $message\n" if $self->debug > 0;
+
   # turn nickname into an object
   $nick = MP3::Napster::User->new($self,$nick,$linespeed);
 
-  if ($port == 0) { # oops, they're behind a firewall!
-    return $self->error("can't download; both clients are behind firewalls") 
+  # create request object
+  my $request = MP3::Napster::TransferRequest->new_download($self,$nick,$song,$fh);
+
+  if ($port == 0) { # they're behind a firewall!
+    warn "initiating passive download\n" if $self->debug > 0;
+    # we must have a listen thread going in this case
+    return $self->error("can't download; both clients are behind firewalls")
 	    unless $self->port > 0;
-    return unless my $download = MP3::Napster::Transfer->new_download($self,
-								       $nick,
-								       $song,
-								       $fh,
-								       undef);
-    my ($rc,$msg) = $self->send(PASSIVE_DOWNLOAD_REQ,qq($nick "$filename"));
-    # the listen thread will wait for the remote client to contact us, then initiate
-    # the actual transfer.
-    return $download;
+    my ($rc,$msg) = $self->send_command(PASSIVE_DOWNLOAD_REQ,qq($nick "$filename"));
+    # the actual transfer will be initiated by the Listen object
+    return $request;
   }
-  
+
   # turn the IP address into standard dotted quad notation
-  my $addr =  join '.',unpack("C4",(pack "V",$ip));  
+  my $addr =  join '.',unpack("C4",(pack "V",$ip));
+  $request->peer("$addr:$port");  # remember the peer in the request
 
-  # create a new download object
-  return unless my $download = MP3::Napster::Transfer->new_download($self,
-								     $self->nickname,
-								     $song,
-								     $fh,
-								     "$addr:$port");
-
-  $download->active_transfer;  # this starts a separate thread
-  return $download;
+  # create a new PeerToPeer object
+  return unless MP3::Napster::PeerToPeer->new($request,$self);
+  return $request;
 }
 
-# change some registration information
-# can provide:
-#     link     => $new_link_speed,
-#     password => $new_password;
-#     email    => $new_email;
-sub change_registration {
+# wait until all downloads are finished
+sub wait_for_downloads {
   my $self = shift;
-  my %attributes = @_;
-  $self->send(CHANGE_LINK_SPEED,$attributes{link})   if defined $attributes{link};
-  $self->send(CHANGE_PASSWORD,$attributes{password}) if defined $attributes{password};
-  $self->send(CHANGE_EMAIL,$attributes{email})       if defined $attributes{email};
-  1;
+  $self->registry->unshare_all if $self->registry;
+  $self->wait_for(TRANSFER_DONE) while $self->transfers;
 }
 
-# register/unregster a file transfer
-sub register_transfer : locked method{
+# register/unregister a file transfer
+sub register_transfer {
   my $self = shift;
-  my ($type,$object,$register_flag) = @_;
+  my ($type,$request,$register_flag) = @_;
 
-  warn "register_transfer($type,$object,$register_flag)" if $DEBUG_LEVEL > 1;
-  my $title = $object->title;
+  warn "register_transfer($type,$request,$register_flag)" if $self->debug > 0;
+  my $path = $request->song;
+  my ($title) = $path =~ m!([^/\\]+)$!;
 
   if ($register_flag) {
-    $self->{$type}{lc $object->nickname,$title} = $object;
+    $self->{$type}{lc $request->nickname,$title} = $request;
   } else {
-    delete $self->{$type}{lc $object->nickname,$title};
+    delete $self->{$type}{lc $request->nickname,$title};
   }
 }
 
@@ -827,374 +750,48 @@ sub uploads {
   $self->_transfers('upload',@_);
 }
 
+# transfers
 sub transfers {
   my $self = shift;
   return ($self->uploads,$self->downloads);
 }
 
+# this is called intermittently to timeout idle connections
+sub do_cleanup {
+  my $self = shift;
+  warn "do_cleanup()" if $self->debug;
+  my @transfers = $self->transfers;
+  for my $t (@transfers) {
+    $t->abort if $t->idle >= $self->transfer_timeout;
+    $t->abort if $t->aborted;
+  }
+}
+
 # private subroutine called by downloads() and uploads()
-sub _transfers : locked method {
+sub _transfers {
   my $self = shift;
   my ($type,$nickname,$path) = @_;
+  return unless $self->{$type};
   return values %{$self->{$type}} unless $nickname && $path;
+  $nickname = lc $nickname;
   # protect against confused clients
   my ($title) = $path =~ m!([^/\\]+)$!;
-  $nickname = lc $nickname;
   $self->{$type}{$nickname,$title};
 }
 
-
-# register a callback on an event
-sub callback : locked method {
+sub DESTROY {
   my $self = shift;
-  my ($event,$sub) = @_;
-  unless (defined $sub) {
-    return unless $self->{callbacks}{$event};
-    return @{$self->{callbacks}{$event}};
-  }
-  die "usage: callback(EVENT,\$CODEREF)" unless ref $sub eq 'CODE';
-  unshift @{$self->{callbacks}{$event}},$sub;
+  warn "$self->DESTROY" if $self->debug > 2;
 }
 
-# replace or delete all callbacks 
-sub replace_callback : locked method {
-  my $self = shift;
-  my ($event,$sub) = @_;
-  delete $self->{callbacks}{$event} unless $sub;
-  $self->{callbacks}{$event} = [$sub] if $sub;
-}
-
-# delete a particular callback by address
-sub delete_callback : locked method {
-  my $self = shift;
-  my ($event,$sub) = @_;
-  return unless my $carray = $self->{callbacks}{$event};
-  $self->{callbacks}{$event} = [ grep { $sub != $_ } @$carray ];
-}
-
-# Discover which server is the "best" one for us to contact.
-sub fetch_server {
-  my $self = shift;
-  my $error;
-  if (my $socket = IO::Socket::INET->new(SERVER_ADDR)) {
-    my $data;
-    # fetch all the data available, usually a dozen bytes or so
-    if (sysread($socket,$data,1024)) { 
-      my ($s) = $data =~ /^(\S+)/;
-      return $self->error('server overloaded') if $s =~ /^127\.0\.0\.1:/;
-      $self->server($s);
-      return 1;
-    }
-    $error = 'no data returned from napster server';
-  } else {
-    $error = "connection refused";
-  }
-  $self->error($error) if $error;
-  return;
-}
-
-sub send {
-  my $self = shift;
-  my ($code,$data) = @_;
-  $data = '' unless defined $data;
-  $self->{send_queue}->enqueue([$code,$data]);
-  1;
-}
-
-# Send a napster message and wait for a response.
-# The message body can be found in the result.
-sub send_loop {
-  my $self = shift;
-  my $queue = $self->{send_queue};
-  my $sock  = $self->socket;
-  while ( defined (my $msg = $queue->dequeue) ) {
-    my ($code,$data) = @$msg;
-    warn "sending ",$MESSAGES{$code}||$code," $data\n" if $DEBUG_LEVEL > 1;
-    return $self->error('Not connected') unless my $sock = $self->socket();
-    {
-      lock $sock;
-      my $message = pack ("vv",length $data,$code);
-      syswrite($sock,$message) or die "Can't syswrite() message code: $!";
-      next unless $data;
-      syswrite($sock,$data)    or die "Can't syswrite() message data: $!";
-    }
-  }
-  lock $sock;
-  warn "done with send_loop(): shutting down socket\n" if $DEBUG_LEVEL > 0;
-  $sock->shutdown(1);
-}
-
-# Receive a napster message.  This will return a two-element list
-# consisting of the message type and the contents of the message.
-sub recv {
-  my $self = shift;
-  return $self->error('Not connected') unless my $sock = $self->socket;
-
-  # read a 4-byte message from the input stream
-  warn "recv(): reading message\n" if $DEBUG_LEVEL > 2;
-  my $data;
-  my $bytes = read($sock,$data,4);
-  $bytes += 0;
-  warn "recv(): got $bytes bytes\n" if $DEBUG_LEVEL > 2;
-  warn "recv(): end of file\n"  if !$bytes and $DEBUG_LEVEL > 2;
-  return unless $bytes;
-
-  # unpack it into length and type
-  my ($length,$type) = unpack("vv",$data);
-  return $self->error("Invalid return code: $type") 
-    unless $type >= 0 and $type <= 2000;  # allowable range for message
-
-  # read the rest of the data
-  if ($length > 0) {
-    return unless read($sock,$data,$length);
-    return ($type,$data);
-  } else {
-    return ($type);
-  }
-}
-
-# send a message and wait for list of result codes
-sub send_and_wait {
-  my $self = shift;
-  my ($outgoing_code,$message,$incoming_code,$timeout) = @_;
-  lock $self->{ec};
-  return unless $self->send($outgoing_code,$message);
-  return $self->wait_for($incoming_code,$timeout)
-    unless defined $timeout && $timeout ==0;
-}
-
-# Wait for a particular result code or a list of result codes.
-# Return the rc and the message body.
-sub wait_for {
-  my $self = shift;
-  my ($ec,$timeout) = @_;
-  return unless defined $ec;
-
-  # lock so that we don't miss any events
-  lock $self->{ec};
-  my %ok = (ref $ec eq 'ARRAY') ? map {$_=>1} @$ec : ($ec=>1);
-  warn "waiting for ",join(' ',map {$MESSAGES{$_}||$_} keys %ok)," (timeout = $timeout)\n" if $DEBUG_LEVEL > 1;
-
-  $self->ec('');
-  $ok{TIMEOUT()}++ if $timeout;
-  foreach (keys %ok) {
-    $self->message($_,undef);
-  }
-  $self->tagged_events(\%ok);
-
-  undef $ec;
-  my $msg;
-
-  # keep track of the time
-  my $timer = $self->timer($timeout) if $timeout;
-  
-  cond_wait $self->{ec};
-  # see which one of our event codes arrived
-  foreach (sort { $a <=> $b} keys %ok) {
-    if (defined ($msg = $self->message($_))) { $ec = $_; last }
-  }
-  warn "wait_for(): got ",$MESSAGES{$ec} || $ec || 'nothing'," $msg\n" if $DEBUG_LEVEL > 1;
-
-  # clear the timeout
-  $self->clear_timer($timer) if $timeout;
-  # and the list of tagged events
-  $self->tagged_events({});  
-  return if $ec == TIMEOUT && $msg == $timer;
-  return wantarray ? ($ec,$msg) : $ec;
-}
-
-# Sort messages from the server into the appropriate slot.
-# If multiple messages are present, then 
-sub process_message {
-  my $self = shift;
-  my ($ec,$message) = @_;
-  $self->{event_queue}->enqueue([$ec,$message]);
-}
-
-sub process_event {
-  my $self = shift;
-  my $queue = $self->{event_queue};
-  warn "process_event(): starting\n" if $DEBUG_LEVEL > 0;
-  while (defined (my $msg = $queue->dequeue)) {
-    print STDERR "process_event(): locking {ec}..."  if $DEBUG_LEVEL > 2;
-    # wait until someone has unlocked {ec}
-    lock $self->{ec};
-    warn "got it\n"  if $DEBUG_LEVEL > 2;
-
-    my ($ec,$message) = @$msg;
-    warn $MESSAGES{$ec} || $ec,defined $message ? ": $message\n" : "\n"  if $DEBUG_LEVEL > 1;
-
-    $self->ec($ec);
-    $self->error($message ? "$MESSAGES{$ec}: $message" : $MESSAGES{$ec}) if $ERRORS{$ec};
-
-    # transform some messages
-    $message = $MESSAGE_CONSTRUCTOR{$ec}->($self,$message) if $MESSAGE_CONSTRUCTOR{$ec};
-
-    if ($MULTILINE_CODE{$ec}) {
-      lock $self;
-      push (@{$self->{messages}{$ec}},$message);
-    } else {
-      $self->message($ec,$message||'');
-    }
-
-    $self->invoke_callback($ec,$message);
-
-    # signal threads waiting on any rc
-    cond_signal $self->{ec} if $self->tagged_events()->{$ec} || $ec == DISCONNECTING;
-  }
-  warn "process_event(): done\n" if $DEBUG_LEVEL > 0;
-}
-
-# default callbacks
-sub install_default_callbacks {
-  my $self = shift;
-
-
-  # ping/pong callback
-  $self->callback(PING,sub { my $self = shift;
-			     my $data = shift;
-			     $self->send(PONG,$data) });
-
-  # channel enrollment
-  $self->callback(JOIN_ACK,sub { my $self = shift;
-				 my $chan = shift;
-				 warn "JOIN_ACK: $chan\n" if $DEBUG_LEVEL > 0;
-				 $self->channel_hash->{"\u\L$chan"}++ });
-  
-  # set data port message (used by server when it can't get in)
-  $self->callback(SET_DATA_PORT, sub { my $self = shift;
-				       my $newport = shift;
-				       return if $newport == $self->port;
-				       warn "Set data port: $newport" if $DEBUG_LEVEL > 0;
-				       if ($self->port) {
-					 lock $self->listener->{done};
-					 $self->listener->done(1);
-					 cond_wait $self->listener->{done};
-				       } else {
-					 $self->listener(MP3::Napster::Listener->new($self)) 
-					   unless $self->listener;
-				       }
-				       $self->listener->start($newport);
-				       $self->send(CHANGE_DATA_PORT,$self->port);
-				     });
-
-  # Handle upload requests when we are not firewalled and the remote
-  # user will make an incoming connection to us.
-  # We check our registry to see if the sharename is
-  # recognized and send an ACK if so.  Otherwise, send a GET_ERROR
-  $self->callback(PASSIVE_UPLOAD_REQUEST,
-		  sub { my $self = shift;
-			my $msg = shift;
-			if (!$self->disconnecting
-			    and
-			    my ($nick,$sharename) = $msg =~ /^(\S+) "([^\"]+)"/) {
-			  warn "processing upload request from $nick for $sharename\n" if $DEBUG_LEVEL > 1;
-			  my $song = $self->registry->song($sharename);
-			  if ($song && 
-			      (my $u = MP3::Napster::Transfer->new_upload($self,
-									  MP3::Napster::User->new($self,$nick),
-									  $song,$song->path))) {
-			    $u->status('queued');
-			    $self->send(UPLOAD_ACK,$msg);
-			    return;
-			  }
-			}
-			$self->send(PERMISSION_DENIED,$msg);
-		      });
-
-  # Handle upload requests when we are behind a firewall and are expected
-  # to make an (active) outgoing connection to the peer.
-  # We check our registry to see if the sharename is recognized
-  # and initiate an outgoing connection if so.
-  # Otherwise we send a PERMISSION_DENIED
-  $self->callback(UPLOAD_REQ,
-		  sub {
-		    my $self = shift;
-		    my $msg = shift;
-		    if (!$self->disconnecting
-			and
-			my ($nick,$ip,$port,$sharename,$md5,$speed) 
-			= $msg =~ /^(\S+) (\d+) (\d+) "([^\"]+)" (\S+) (\d+)/) {
-		      warn "processing passive upload request from $nick for $sharename" if $DEBUG_LEVEL > 1;
-		      if (my $song = $self->registry->song($sharename)) {
-
-			# turn the IP address into standard dotted quad notation
-			my $addr =  join '.',unpack("C4",(pack "V",$ip));  
-			my $upload = MP3::Napster::Transfer->new_upload($self,
-									MP3::Napster::User->new($self,$nick,$speed),
-									$song,
-									$song->path,
-									"$addr:$port");
-
-			# start upload in new thread
-			warn "starting active transfer" if $DEBUG_LEVEL > 1;
-			$upload->active_transfer;
-			return;
-		      }
-		    }
-		    # if we don't share this file...
-		    $self->send(PERMISSION_DENIED,$msg);
-		  }
-		 );
-
-  # handle delayed user offline message, which may be sent for requested downloads
-  # eg USER_OFFLINE: Bendewd "D:\Program Files\Napster\Music\12-31-99d1t02-Blue Indian.mp3" 3528852 3
-  $self->callback(USER_OFFLINE,
-		  sub {
-		    my $self = shift;
-		    my $msg = shift;
-		    return unless my ($user,$path) = $msg =~ /^(\S+) "([^\"]+)"/;
-		    foreach ($self->transfers) {
-		      if (lc($_->remote_user) eq lc($user)
-			  and 
-			  lc($_->remote_path) eq lc($path)) {
-			warn "$user offline, ",$_->direction," of ",$_->title," cancelled\n" if $DEBUG_LEVEL > 0;
-			$_->status("transfer cancelled ($user offline)"); 
-			$_->done(1);
-		      }
-		    }
-		  }
-		  );
-  
-}
-
-# invoke each callback in turn
-sub invoke_callback {
-  my $self = shift;
-  my ($event,$message) = @_;
-  return unless my @callbacks = $self->callback($event);
-  foreach (@callbacks) {
-    eval { $_->($self,$message) };  # protect against bad callbacks
-    warn $@ if $@;
-  }
-}
-
-# Start the receive loop as a thread
-sub receive_loop {
-  my $self = shift;
-  warn "starting receive_loop()\n" if $DEBUG_LEVEL > 0;
-  while (my($ec,$message) = $self->recv) {
-    $self->process_message($ec,$message);
-  }
-  warn "done with receive_loop(): queing DISCONNECTING\n" if $DEBUG_LEVEL > 0;
-  $self->process_message( DISCONNECTING,$self );
-
-  warn "receive_loop(): queueing undef\n" if $DEBUG_LEVEL > 0;
-  $self->{event_queue}->enqueue(undef);
-
-  $self->disconnect unless $self->disconnecting;
-}
-
-sub DESTROY : locked method{
-  shift->disconnect;
-}
 
 1;
+
 __END__
 
 =head1 NAME
 
-MP3::Napster - Perl extension for the Napster Server
+MP3::Napster - Perl interface to the Napster Server
 
 =head1 SYNOPSIS
 
@@ -1206,7 +803,7 @@ MP3::Napster - Perl extension for the Napster Server
   $nap->login('username','password',LINK_T1) || die "Can't log in ",$nap->error;
 
   # listen for incoming transfer requests on port 6699
-  $nap->listen(6699) || die "can't listen: ",$nap->error;
+  $nap->port(6699) || die "can't listen: ",$nap->error;
 
   # set the download directory to "/tmp/songs"
   mkdir '/tmp/songs',0777;
@@ -1214,7 +811,7 @@ MP3::Napster - Perl extension for the Napster Server
 
   # arrange for incomplete downloads to be unlinked
   $nap->callback(TRANSFER_DONE,
-  	         sub { my ($nap,$transf) = @_;
+  	         sub { my ($nap,$code,$transf) = @_;
 		       return unless $transf->direction eq 'download';
 		       return if $transf->status eq 'transfer complete';
 		       warn "INCOMPLETE: ",$transf->song," (UNLINKING)\n";
@@ -1235,8 +832,9 @@ MP3::Napster - Perl extension for the Napster Server
     last if ++$count >= 4;  # download no more than four
   }
 
-  # disconnect after waiting for all pending transfers to finish (10 min max)
-  END { $nap->disconnect(600) if $nap }
+  # disconnect after waiting for all pending transfers to finish
+  $nap->wait_for_downloads;
+  $nap->disconnect;
 
 =head1 DESCRIPTION
 
@@ -1246,12 +844,15 @@ exchange messages with users, search the database of MP3 sound files,
 and either download selected MP3s to disk or pipe them to another
 program, typically an MP3 player.
 
+The module can be used to write Napster robots to search and download
+files automatically, or as the basis of an interactive client.
+
 =head1 THEORY OF OPERATION
 
 The Napster protocol is asynchronous, meaning that it is
 event-oriented.  After connecting to a Napster server, your program
 will begin receiving a stream of events which you are free to act on
-or ignore.  Examples of events include PUBLIC_MESSAGE_RECVD, received
+or ignore.  Examples of events include PUBLIC_MESSAGE, received
 when another user sends a public message to a channel, and USER_JOINS,
 sent when a user joins a channel.  You may install code subroutines
 called "callbacks" in order to intercept and act on certain events.
@@ -1260,12 +861,27 @@ possible to issue a command to the Napster server and then wait up to
 a predetermined period of time for a particular event or set of events
 to be returned.
 
+If you wish to build an interactive Napster client on top of this
+module, you will need to install a series of callbacks to handle each
+of the events that you wish to catch.  Once the callbacks are
+installed, you will call the run() method in order to run
+MP3::Napster's event loop.  run() will not return until the connection
+between client and server is finished.  To process line-oriented user
+commands during this time, you can install a command-handling callback
+using the command_processor() method.
+
+MP3::Napster has a Tk mode, for writing applications on top of the
+graphical PerlTk module.  In this mode, Tk takes over MP3::Napster's
+internal event loop, processing I/O from the server and peers, and
+invoking your callbacks when appropriate.
+
+You don't need to worry about callbacks if you only intend to use the
+module as a non-interactive robot.
+
 Because of its asynchronous operation MP3::Napster makes heavy use of
-Perl's Thread class.  You must have a version of Perl built with the
-USE_THREADS compile-time option.  At build and install time,
-MP3::Napster will check this for you and refuse to continue unless
-your version of Perl is threaded.  Other prerequisites are Digest::MD5
-and MP3::Info (both needed to handle MP3 uploads).
+nonblocking I/O and Perl's IO::Select class.  IO::Select is standard
+in Perl versions 5.00503 and higher.  Other prerequisites are
+Digest::MD5 and MP3::Info (both needed to handle MP3 uploads).
 
 The Napster protocol has a peer-to-peer component.  During MP3 upload
 and download operations between two users, one user's client will
@@ -1294,6 +910,8 @@ This section describes the basic operation of the module.
 
 =item B<$nap = MP3::Napster-E<gt>new([$address])>
 
+=item B<$nap = MP3::Napster-E<gt>new(@options)>
+
 The new() class method will attempt to establish a connection with a
 Napster server.  If you wish to establish a connection with a
 particular server, you may provide its address and port number in the
@@ -1301,8 +919,8 @@ following format: aa.bb.cc.dd:PPPP, where PPPP is the port number.
 You may use a hostnames rather than IP addresses if you prefer.
 
 If you do not provide an address, MP3::Napster will choose the "best"
-server by asking the Napster master server located at
-208.184.216.223:8875.  Note that there are several Napster servers,
+server by asking the "meta" Napster master server located at
+server.napster.com:8875.  Note that there are several Napster servers,
 and that a user logged into one server will not be visible to you if
 you are logged into a different one.
 
@@ -1310,33 +928,54 @@ If successful, new() return an MP3::Napster object.  Otherwise it will
 return undef and leave an error message in $@ and in
 MP3::Napster->error.
 
+The module also provides a long form of the new() method which takes a
+series of option/value pairs.  Options and their defaults are:
+
+ Option    Description                   Default
+
+ -server   Server in form addr:port      undef
+ -meta     Metaserver in form addr:port  server.napster.com:8875
+ -tkmain   TK main widget                undef
+
+The B<-server> argument has the same meaning as in the single-argument
+form of new().  B<-meta> allows you to specify an alternative address
+for the Napster meta server.  B<-tkmain> provides a hook into the
+Perl-Tk event handling, as described below under L<"Using MP3::Napster
+with PerlTk">.  For example, to connect to the BitchX server and use
+the Tk event handling system:
+
+  use Tk;
+  use MP3::Napster;
+  $main = MainWindow->new;
+  $nap  = MP3::Napster->new(-server => 'bitchx.dimension6.com:8888',
+                            -tkmain => $main);
+
 =item B<$nap-E<gt>disconnect([$wait])>
 
 The disconnect() object method will sever its connection with the
-Napster server and tidy up by cancelling any pending upload or
-download operations.  If you do not call disconnect(), then your
-program will hang until the server decides to manually disconnect you,
-which may not be for some time.  The best way to ensure that
-disconnect() is always called before your program exits is to put the
-method in an END {} block:
-
-  END { $nap->disconnect if defined $nap }
-
+Napster server and tidy up by cancelling any pending
+upload or download operations.
+ 
 By default, disconnect() will immediately abort all pending downloads
-and uploads.  If you wish your script to pause until they are done,
-pass disconnect() an argument indicating the number of seconds you are
-willing to wait for file transfers to complete.  Disconnect() will
-pause until all file transfers are done, or until it times out.
-During this period of time, MP3::Napster will not accept new upload
-requests.
+and uploads.  If you wish your script to wait until they are done,
+call wait_for_downloads() first.
 
-For other techniques for waiting on file transfers, see the section
-L<"Waiting for Downloads Efficiently">.
+=item B<$nap-E<gt>wait_for_downloads>
 
-=item B<$nap-E<gt>reconnect>
+This method will block until all pending uploads and downloads are
+complete.  It first unshares all shared files, and refuses to service
+new upload requests. 
 
-This method performs a disconnect() and then a connect(), attempting
-to reestablish a connection with the server.
+In the case of a slow or hung peer, wait_for_downloads() will wait
+until the transfer has timed out, ordinarily five minutes of complete
+inactivity.  See L<"Waiting for Downloads"> for details on how to
+alter this.
+
+=item B<$nap-E<gt>run>
+
+Run the event loop, receiving and responding to events.  This
+operation will block until the connection is disconnected.
+Ordinarily, you will disconnect the connection within a callback.
 
 =item B<$nap-E<gt>error>
 
@@ -1360,11 +999,15 @@ this section provide access to the login facilities.
 
 =over 4
 
-=item B<$email = $nap-E<gt>login($nickname,$password [,LINK_SPEED])>
+=item B<$email = $nap-E<gt>login($nickname,$password [,LINK_SPEED] [,$port])>
 
 The login() method will attempt to log you in as a registered user
 under the indicated nickname and password.  You may optionally provide
-a link speed selected from the following list of exported constants:
+a link speed and a value describing the port on which the client will
+accept incoming connections.
+
+The link speed should be selected from the following list of exported
+constants:
 
   LINK_14K   LINK_64K    LINK_T1
   LINK_28K   LINK_128K   LINK_T3
@@ -1374,6 +1017,16 @@ a link speed selected from the following list of exported constants:
 The link speed will default to LINK_UNKNOWN if absent.  The indicated
 speed will be displayed to other users when they browse your list of
 shared files and user profile.
+
+The port many be any valid internet port number, normally an integer
+between 1024 and 65535.  The standard napster port is 6699, but you
+are free to use any valid port. If a port of 0 is specified, the
+module will identify your client to the server as being firewalled.
+The module will still be able to perform file transfers by making
+outgoing connections to other peers, but will not be able to exchange
+files with other firewalled peers.  If a port of -1 is specified, the
+module will pick an unused port automatically.  This is recommended
+for multiuser systems.
 
 If successful, login() will either return the email address you
 provided at registration time or the anonymous email address
@@ -1412,9 +1065,9 @@ to confirm that the demographic attributes actually "take," since the
 uploaded information is not made available to clients.
 
 If successful, the registration email address will be returned.
-Otherwise undef will be returned and $self->error will return the
-exact error message.  Typical error messages are "user already
-registered" and "invalid nickname."
+Otherwise undef will be returned and $self->error will show the exact
+error message.  Typical error messages are "user already registered"
+and "invalid nickname."
 
 =item B<$result = $nap-E<gt>change_registration(email=E<gt>$mail,password=E<gt>$pass,link=E<gt>$link)>
 
@@ -1438,7 +1091,7 @@ use other features of the Napster server.
 
 =over 4
 
-=item B<$sharename = $nap-E<gt>share('path/to/a/file.mp3' [,$cache])>
+=item B<$share = $nap-E<gt>share('path/to/a/file.mp3' [,$cache])>
 
 The share() method will mark an MP3 file as shared with the community.
 The file may be specified using an absolute or relative path.
@@ -1469,34 +1122,43 @@ frequently share large numbers of files.  However, it requires that
 the directory containing the indicated file be writable and
 executable.
 
-=item B<$port = $nap-E<gt>listen([$port])>
+=item B<@shares = $nap-E<gt>share_dir('path/to/a/directory/' [,$cache])>
 
-The listen() method will launch a thread that listens and services
-incoming connections from other clients.  It is used for uploads and
-downloads when communicating with clients that are behind firewalls;
-you will want to call this even if you are not sharing any files.
+This is like share() but instead of sharing a single file it shares
+the contents of a directory, and returns the list of
+MP3::Napster::Song objects shared in this way.  Currently, the module
+does not automatically monitor the directory and add to the list of
+shares when it is updated.
+
+=item B<$port = $nap-E<gt>port([$port])>
+
+The port() method will set or change the port on which the client
+listens for incoming connections.  This method is called internally by 
+login() and register() immediately after the client successfully logs
+into the server.  You may call the method at any time thereafter in
+order to change the port, or to disable incoming connections.
 
 You may hard-code a port to listen to and provide it as an argument to
-listen().  If you provide a negative port number, or no port number at
-all, listen() will select an unused high-numbered port and register it
-with the Napster server.  This is recommended if you are on a machine
-that is shared by multiple users and there are no firewall issues that
-will limit the range of open ports.  The standard port used by the PC
-clients is 6699.  
+listen().  If you provide a negative port number, port() will select
+an unused high-numbered port and register it with the Napster server.
+This is recommended if you are on a machine that is shared by multiple
+users and there are no firewall issues that will limit the range of
+open ports.  The standard port used by the PC clients is 6699.
 
-Note that it is possible for the Napster server to tell the module to
-change its data port number, and this may happen at any time.  Install
-a callback for the CHANGE_DATA_PORT event if you want to be notified
-when this happens.
+Called with no arguments, this method returns the current port.
+
+Note that it is possible for a Napster server to tell the module to
+change its data port number.  Install a callback for the
+CHANGE_DATA_PORT event if you want to be notified when this happens.
+Set allow_setport() to a false value to prevent this from happening.
 
 If you are behind a firewall and cannot accept incoming connections,
-do not call this method at all as it will incorrectly inform the
-Napster server that you can accept incoming connections.  When running
-behind a firewall, you will be unable to exchange files with other
-firewalled users.  However, you will still be able to upload and
-download files from those users who are not firewalled.
+set the port to 0, or just accept the defaults.  This will inform the
+Napster server that you are firewalled.  Although you will not be able
+to exchange files with other firewalled users, you will be able to do
+so with non-firewalled users.
 
-If successful, listen() returns the port that it is listening on.
+If successful, port() returns the port that it is listening on.
 Otherwise it returns undef and leaves the error message in
 $nap->error.  Uploads requested by remote users will proceed
 automatically without other intervention.  You can receive
@@ -1504,9 +1166,23 @@ notification of these uploads by installing callbacks for the
 TRANSFER_STARTED, TRANSFER_IN_PROGRESS and TRANSFER_DONE events or by
 interrogating the $nap->uploads() method (described below).
 
-=item
+=item B<$flag = $nap-E<gt>allow_setport([$flag])>
 
-TODO: Provide an API for listing and deleting shared songs.
+The Napster protocol allows the server to send the client
+SET_DATA_PORT commands, causing the module to change the port that it
+is listening on.  This may be a security hole, because it allows
+unscrupulous individuals to open arbitrary listening ports on your
+machine, so by default, the module ignores such requests.  To turn
+automatic handling of setport messages on, call allow_setport() with a 
+true flag.
+
+Without any arguments, the method returns the current state of the flag.
+
+item B<$song-E<gt>unshare()>
+
+Given a Song object returned from share() or share_file(), unshare()
+will unregister the song, removing it from the search list at the
+server and disallowing further downloads.
 
 =back
 
@@ -1608,8 +1284,8 @@ you.
 
 Given an MP3::Napster::Song object returned from a previous search()
 or browse(), the download() method will attempt to initiate a download
-and perform the file transfer in a background thread.  If the download
-is successfully initiated, an MP3::Napster::Transfer object will be
+and perform the file transfer in the background.  If the download is
+successfully initiated, an MP3::Napster::Transfer object will be
 returned (see L<MP3::Napster::Transfer>).  You can use this object to
 monitor the progress of the transfer.  If the download attempt was
 unsuccessful, the method will return undef and leave an error message
@@ -1823,14 +1499,13 @@ Example:
 
 =item B<($event,$message) = $nap-E<gt>wait_for(\@event_codes [,$timeout])>
 
-The wait_for() method will cause the current thread of execution to
-sleep until one of the indicated events occurs or the call times out,
-using the optional $timeout argument (expressed in seconds).  If one
-of the events occurs, wait_for() will return a two-element list
-containing the event code and the message.  If the call times out, the
-method will return an empty list.
+The wait_for() method will block until one of the indicated events
+occurs or the call times out, using the optional $timeout argument
+(expressed in seconds).  If one of the events occurs, wait_for() will
+return a two-element list containing the event code and the message.
+If the call times out, the method will return an empty list.
 
-Wait_for() provides a number of shortcut variants.  To wait for just
+wait_for() provides a number of shortcut variants.  To wait for just
 one event, you can pass the event code as a scalar rather than an
 array reference.  If you call the method in a scalar context, it will
 return just the event code, discarding the message, or undef in the
@@ -1860,12 +1535,7 @@ Example 2:
 
 =item B<($event,$message) = $nap-E<gt>send_and_wait($event_code,$message,\@event_codes [,$timeout])>
 
-This method combines send() with wait_for() in one operation, and is
-actually more reliable than using the two separately.  This is because
-send_and_wait() locks the current event queue so that no threads can
-update it until after the message is sent and wait_for() has been
-called.  Otherwise there is a risk of the desired event occurring
-before you have a chance to wait for it.
+This method combines send() with wait_for() in one operation.
 
 Example:
 
@@ -1884,21 +1554,20 @@ and this call will be equivalent to send().
 =item B<$result = $nap-E<gt>process_message($event_code,$message)>
 
 If you wish to insert an event of your own making into the event
-queue, process_message() allows you to do so.  Any threads waiting on
-the event will be alerted, and all installed callbacks for the event
-will be invoked.
+queue, process_message() allows you to do so.  This will block until
+all callbacks for the event have finished execution.
 
 =back
 
-=head2 Waiting for Downloads Efficiently
+=head2 Waiting for Downloads
 
-Because file transfers occur in their own thread, you have to be
-careful that your script does not quit while they are still in
-progress.  The easiest way to do this is to call disconnect() with a
-positive argument indicating the number of seconds you are willing to
-wait for pending file transfers to complete.  During this time,
-callbacks installed for TRANSFER_IN_PROGRESS and TRANSFER_DONE will be
-executed as usual.
+Because file transfers occur in the background, you have to be careful
+that your script does not quit while they are still in progress.  The
+easiest way to do this is to call wait_for_downloads().  This will
+unshare all shared songs to prevent further transfers from being
+initiated and then block until the last transfer is finished.  During
+this time, the callbacks installed for TRANSFER_IN_PROGRESS and
+TRANSFER_DONE will be executed as usual.
 
 If you prefer, you can manually check and wait on pending
 transfers. You might want to do this, for instance, if you want to
@@ -1929,6 +1598,31 @@ L<MP3::Napster::Transfer>).  See the napster.pl and
 eg/simple_download.pl scripts for some ideas on doing this.
 
 Similar code will also work for pending uploads.
+
+To time out the process of waiting for transfers to complete, you can
+use a standard eval{} block:
+
+  eval {
+     alarm(300);  # allow five minutes for completion
+     local $SIG{ALARM} = sub { die "timeout" };
+     $nap->wait_for_downloads();
+  }
+  alarm(0);
+
+You may also adjust an internal timeout used for idle transfers:
+
+=over 4
+
+=item B<$timeout = $nap-E<gt>transfer_timeout([$timeout])>
+
+Internally the module checks transfers at regular intervals and
+cancels any that have been inactive for a period of time.  Inactivity
+means that no data has been transmitted in either direction.
+
+The default timeout is 300 seconds (five minutes).  You may examine
+and change this value with the transfer_timeout() method.
+
+=back
 
 =head1 CALLBACKS
 
@@ -1967,6 +1661,13 @@ event code, replacing whatever was there before.  When called with a
 single event code argument, any callbacks assigned to the event code
 are deleted.
 
+=item B<$nap-E<gt>delete_callback(EVENT_CODE [,$coderef])>
+
+The delete_callback() method deletes a callback from the indicated
+event code.  If called without a code reference, all callbacks
+assigned to the event are cleared.  Use this with caution, as some
+callbacks are used internally to handle transfer requests.
+
 =item B<$event_code = $nap-E<gt>event_code>
 
 The event_code() method returns the current event code.  It is most
@@ -1994,16 +1695,16 @@ is most useful when used from within a callback.
 
 =back
 
-When a callback is invoked, it is passed two arguments consisting of
-the MP3::Napster object and a callback-specific message.  Usually the
-message is a string, but for some callbacks it is a more specialized
-object, such as an MP3::Napster::Song.  Some events have no message,
-in which case $msg will be undefined.
+When a callback is invoked, it is passed three arguments consisting of
+the MP3::Napster object, the event code, and a callback-specific
+message.  Usually the message is a string, but for some callbacks it
+is a more specialized object, such as an MP3::Napster::Song.  Some
+events have no message, in which case $msg will be undefined.
 
 Callbacks should have the following form:
 
  sub callback {
-    my ($nap,$msg) = @_;
+    my ($nap,$code,$msg) = @_;
     # do something
  }
 
@@ -2012,7 +1713,7 @@ in which the message is an MP3::Napster::User object corresponding to
 the user who joined the channel:
 
  sub report_join {
-   my ($nap,$user) = @_;
+   my ($nap,$code,$user) = @_;
    my $channel = $user->current_channel;
    print "* $user has entered $channel *\n";
  }
@@ -2024,7 +1725,7 @@ anonymous coderefs:
 
  $nap->callback(USER_JOINS,
                 sub {
-                    my ($nap,$user) = @_;
+                    my ($nap,$code,$user) = @_;
                     my $channel = $user->current_channel;
                     print "* $user has entered $channel *\n";
                 });
@@ -2034,13 +1735,105 @@ can't crash the system (hopefully).  Any error messages generated by
 die() or compile-time errors in callbacks are printed to standard
 error.
 
+=head2 Handling User Input
+
+If you wish to write an interactive application that takes user input
+and passes it on to the Napster server, MP3::Napster provides a way to
+monitor a filehandle for available data and invoke a callback whenever
+there is a complete line to read.
+
+=over 4
+
+=item B<$nap->command_processor($coderef [,$filehandle])>
+
+The command_processor will install the code reference $coderef to be
+called whenever $filehandle has a complete line of data to be read.
+If no filehandle is provided, then STDIN is assumed.
+
+=back
+
+Here is an example of using this facility:
+
+ $nap->command_processor(\&do_command,\*STDIN);
+ $nap->run;
+
+ sub do_command {
+   my $nap  = shift;
+   my $line = shift;
+   if ($line =~ /^login/) {
+      do_login($line);
+   } elsif ($line =~ /^whisper/) {
+      do_whisper($line);
+   }
+ }
+
+This example first installs do_command() as the handler for data
+coming in on STDIN, and then calls $nap->run, starting the event loop.
+Whenever there is a complete line to read the callback will be called
+with two arguments consisting a reference to the MP3::Napster object,
+and the input line.  The line may end with a terminating newline.  On
+end of file, the callback will be called a final time with undef as
+the second argument.
+
+The more traditional way of doing this will not necessarily work
+satisfactorily:
+
+  while (my $line = <>) {
+   if ($line =~ /^login/) {
+      do_login($line);
+   } elsif ($line =~ /^whisper/) {
+      do_whisper($line);
+   }
+  }
+
+The problem is that the program spends most of its time waiting on
+STDIN.  During this time, background processing of file transfers and
+other events will not be executed.
+
+=head2 Using MP3::Napster with PerlTk
+
+If you wish to use MP3::Napster with PerlTk, call MP3::Napster->new()
+with a B<-tkmain> argument, providing it with the reference to the
+main window returned by the Tk::MainWindow() function.  This will
+change MP3::Napster's event processing in the following fundamental
+ways:
+
+=over 4
+
+=item 1. Outgoing message methods will return immediately.
+
+login(), register(), search() and all the other methods that send
+messages to the server will no longer wait for a result, but will
+return immediately.  The return value will indicate only whether the
+message was successfully queued for transmission.  You must detect the
+result of the command by intercepting and handling events returned by
+the server.
+
+=item 2. The run(), wait_for(), and send_and_wait() methods return immediately
+
+Similarly, these methods no longer block until an event has occurred
+but return immediately.
+
+=item 3. Tk's MainLoop handles I/O
+
+All I/O is handled through Tk's internal event handling, by using
+Tk::fileevent() to install a set of filehandles to be monitored for
+I/O.  You must call MainLoop() in order for anything to happen.
+
+=back
+
+A very very primitive PerlTk interface to MP3::Napster can be found in
+the top level of the MP3::Napster directory in tknapster.pl.  It is
+installed automatically in /usr/local/bin during "make install".
+
 =head2 Incoming Events
 
 This is a list of the events that can be intercepted and handled by
 callbacks.  Those that are marked as "used internally" may already
 have default callbacks installed, but you are free to add your own
 using callback().  However be careful before using replace_callback()
-to remove the default handler, and be sure you know what you're doing!
+or delete_callback() to remove the default handler, and be sure you
+know what you're doing!
 
 Not all of the known events are documented here (but will be in later
 versions).  In addition, there are a number of events whose
@@ -2215,7 +2008,7 @@ MP3::Napster.
 
 This event is sent at the end of a series of resume responses.
 
-=item PUBLIC_MESSAGE_RECVD (code 403)
+=item PUBLIC_MESSAGE (code 403)
 
   Message: <chan> <nick> <msg>
 

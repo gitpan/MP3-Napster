@@ -7,11 +7,7 @@ exchanged selected MP3s with other users.
 PREREQUISITES
 -------------
 
-This module makes extensive use of threads, which is an experimental
-Perl feature.  IN ORDER TO WORK AT ALL, THIS MODULE MUST BE RUN UNDER
-PERL 5.00503 OR HIGHER WITH THREADS ENABLED.
-
-Other prerequisites include:
+Prerequisites are:
 
 	Digest::MD5
 	MPEG::MP3Info
@@ -26,6 +22,9 @@ front end to use a different player).  mpg123 can be downloaded from:
 
   http://ftp.tu-clausthal.de/pub/unix/audio/mpg123
 
+In order to use the tknapster PerlTk front end, you must have PerlTK
+version 8.00 or higher installed.
+
 INSTALATION
 -----------
 
@@ -33,36 +32,31 @@ To install:
 
 	% perl Makefile.PL
 	% make
-	% make test
-	% make install
+	% make test  # may not work on windows systems
+	% make install UNINST=1
 
 If "make test" fails, run "make test TEST_VERBOSE=1" and send the
-output to me, along with the output of perl -V.
+output to me, along with the output of perl -V.  The UNINST=1 option
+unlinks older versions of this module before installing the new one,
+which is generally a good idea.
+
+"make test" hasn't been tested on Windows systems and may not work.
+It takes advantage of forking and Perl pipes, which are iffy on
+non-Unix systems.  Even though some tests fail, the module may still
+work.
 
 STABILITY
 ---------
 
-The module was developed with Perl 5.00563 on a single processor Linux
-system.  It has been tested on a number of Linux configurations
-running versions of Perl between 5.00503 and 5.00567 and seems stable.
-It has also been tested on a two-processor SMP Sun Solaris system
-running 5.00567 and is *not* stable in that environment (it core dumps
-in short order).  Help tracking down the problem and testing on other
-platforms would be most appreciated.
+This module was originally written to use Perl threads, but the thread
+API changed considerably between 5.005 and 5.6, and is expected to
+change even more before Perl 6.0.  So starting with version 2.0, I
+rewrote the module to use non-blocking I/O instead.  This should make
+it much more stable than before!
 
-This module makes use of Thread::Queue.  On recent versions of Perl
-(5.00567), this module uses an older version of the "locked method"
-attribute.  If you get Thread::Queue-related syntax errors during
-testing, open up Thread/Queue.pm and change all subroutine declarations 
-that look like this:
-
-  sub enqueue : locked, method {
-
-to this:
-
-  sub enqueue : locked method {
-
-Life on the bleeding edge is no fun :-(
+However, because much of the code was rewritten to accomodate this
+change, there may be bugs lurking.  Please send bug reports to me at
+the e-mail listed below.
 
 DOCUMENTATION
 -------------
@@ -80,7 +74,10 @@ file "napster.txt" that accompanies this distribution.
 APPLICATIONS
 ------------
 
-napster.pl:
+A few test applications come with this module.
+
+napster.pl
+----------
 
 This distribution includes an interactive line-oriented Napster client
 named napster.pl.  It will be installed into your scripts directory
@@ -118,7 +115,31 @@ application.  Someone should really write a nice curses or Perl-Tk
 front end to this.
 
 
-simple_download.pl:
+tknapster.pl
+------------
+
+This is an incomplete Napster browser based on PerlTk version 8.00.  I
+used it to test whether the Tk interfaces are working.  The
+application can search for songs and participate in channel
+discussions, but cannot currently download or upload (this is coming).
+
+It should be easy to use.  After launching the application select
+File->Login.  Select the server to connect to, and type in your user
+name.  After a short delay, a Channels menu will appear.  Select the
+channel(s) you are interested in joining.  
+
+A scrolling list of users in the current channel occupies the right
+side of the main window.  Try double-clicking or right-clicking on a
+user name either in the list, or in the main discussion area.
+
+Search using the Search menu.
+
+tknapster.pl has not been tested on Windows platforms.  It might work,
+it might not.
+
+
+simple_download.pl
+------------------
 
 You will find this script in the eg/ subdirectory of this
 distribution.  It illustrates how to write a batch script to search
@@ -127,7 +148,8 @@ download proceeds.  It is hard-coded to search for Beatles songs, but
 you can easily modify it to make it into a more general utility.
 
 
-miniserver.pl:
+miniserver.pl
+-------------
 
 This is a pure-Perl Napster server.  It is very limited compared to
 the real Napster server, since it keeps everything in memory and
@@ -137,13 +159,6 @@ channels, private messages, and file transfer.
 
 I wrote it to support the regression tests.  Someone might want to
 make it into a real server by adding a persistent database backend.
-
-
-fix_attr.pl:
-
-This is a utility script that handles a change in the Perl subroutine
-declaration API during the transition to Perl 5.00563.  It is run
-automatically during "make" if needed.
 
 HELP
 ----

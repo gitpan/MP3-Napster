@@ -8,17 +8,17 @@ use overload
   '""'       => 'name',
   'cmp'      => 'cmp';
 
-sub new : locked {
+sub new {
   my $pack = shift;
   my ($server,$name,$link_type) = @_;
   $link_type ||= MP3::Napster->LINK_UNKNOWN();
   return bless {name=>$name,link=>$link_type,server=>$server},$pack;
 }
 
-sub new_from_user_entry : locked {
+sub new_from_user_entry {
   my $pack = shift;
-  my $server = shift;
-  my ($channel,$name,$sharing,$link_type) = split /\s+/,shift;
+  my ($server,$message) = @_;
+  my ($channel,$name,$sharing,$link_type) = split /\s+/,$message;
   return bless { name            => $name,
 		 sharing         => $sharing,
 		 link            => $link_type,
@@ -26,7 +26,7 @@ sub new_from_user_entry : locked {
 		 server          => $server },$pack;
 }
 
-sub new_from_whois : locked {
+sub new_from_whois {
   my $pack = shift;
   my ($server,$message) = @_;
   my ($nick,$level,$time,$channels,$status,$sharing,$downloads,$uploads,$link_type,$client) = 
@@ -38,66 +38,66 @@ sub new_from_whois : locked {
 	       },$pack;  
 }
 
-sub new_from_whowas : locked {
+sub new_from_whowas {
   my $pack = shift;
   my ($server,$message) = @_;
   my ($nick,$level,$last_seen) =  $message =~ /^(\S+) (\S+) (\d+)/;
   return bless {name=>$nick,level=>$level,last_seen=>$last_seen,status=>'Offline'},$pack;  
 }
 
-sub name : locked method  { 
+sub name   {
   shift->{name};
 }
 sub cmp {
   my ($a,$b,$reversed) = @_;
-  return $reversed ? $a->name cmp $b
-                   : $b cmp $a->name;
+  return $reversed ? $b cmp $a->name
+                   : $a->name cmp $b;
 }
-sub link : locked method { 
+sub link  {
   my $l = $MP3::Napster::LINK{shift->link_code};
   $l =~ s/LINK_//;
   $l;
 }
-sub sharing : locked method  { 
-  $_[0]->_fill('sharing') 
-} 
-sub link_code : locked method { 
-  $_[0]->_fill('link')   
+sub sharing   {
+  $_[0]->_fill('sharing')
 }
-sub server : locked method { 
-  shift->{server}    
+sub link_code  { 
+  $_[0]->_fill('link')
 }
-sub current_channel  : locked method { 
+sub server  {
+  shift->{server}
+}
+sub current_channel   {
     my $self = shift;
     return $self->{current_channel} if $self->{current_channel};
     return ($self->channels)[0];
   }
-sub time  : locked method { 
-  $_[0]->_fill('time')   
+sub time   {
+  $_[0]->_fill('time')
 }
-sub channels : locked method { 
-  $_[0]->_fill('channels'); 
-  @{$_[0]->{channels}} 
+sub channels  {
+  $_[0]->_fill('channels');
+  @{$_[0]->{channels}}
 }
-sub uploads  : locked method { 
-  $_[0]->_fill('uploads')   
+sub uploads   {
+  $_[0]->_fill('uploads')
 }
-sub downloads : locked method { 
-  $_[0]->_fill('downloads') 
+sub downloads  {
+  $_[0]->_fill('downloads')
 }
-sub client : locked method   { 
-  ;$_[0]->_fill('client')    
+sub client    { 
+  ;$_[0]->_fill('client')
 }
-sub status : locked method { 
-  $_[0]->_fill('status')    
+sub status  { 
+  $_[0]->_fill('status')
 }
-sub level : locked method  {
-  $_[0]->_fill('level')     
+sub level   {
+  $_[0]->_fill('level')
 }
-sub last_seen : locked method { 
-  $_[0]->_fill('last_seen') 
+sub last_seen  { 
+  $_[0]->_fill('last_seen')
 }
-sub login_time : locked method{ 
+sub login_time { 
   my $self = shift; 
   $self->_fill; 
   $self->nice_time($self->time); }
@@ -149,13 +149,13 @@ sub profile {
 	       "Client:    ".$self->client);
 }
 
-sub update : locked method {
+sub update  {
   my $self = shift;
   undef $self->{status};
   $self->_fill;
 }
 # populate empty user objects by doing a whois
-sub _fill : locked method {
+sub _fill  {
   my $self = shift;
   my $field = shift;
   return $self->{$field} if defined $self->{$field};

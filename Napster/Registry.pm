@@ -2,9 +2,11 @@ package MP3::Napster::Registry;
 # registry of local songs
 
 use strict;
+use IO::File;
 use Digest::MD5;
 use MP3::Napster();
 use MP3::Napster::Song();
+use MP3::Napster::MessageCodes qw(I_HAVE REMOVE_FILE REMOVE_ALL);
 require MP3::Info;
 
 use vars qw($VERSION);
@@ -15,23 +17,21 @@ use constant CACHE_DIR      => '.mp3-nap';
 # use constant MAGIC_HASH_LEN => 299_008;  # number of bytes recommended by the opennap spec (?)
 use constant MAGIC_HASH_LEN => 300_032;    # number of bytes that the window nap client hashes (?)
 
-sub new : locked {
+sub new {
   my $pack   = shift;
   my $server = shift;
   return bless { server => $server },$pack;
 }
 
-sub server : locked method { 
-  shift->{server} 
-}
+sub server {  shift->{server} }
 
-sub path : locked method {
+sub path {
   my $self = shift;
   my $sharename = shift;
   return $self->song($sharename)->path;
 }
 
-sub song : locked method {
+sub song {
   my $self = shift;
   my ($sharename,$song) = @_;
   return defined $song ? $self->{song}{$sharename} = $song
@@ -48,9 +48,10 @@ sub share_file {
 
   my $sharename = $self->sharename($path,\%tag);  # build a nice sharename
   my $message = qq("$sharename" $md5 $size $bitrate $frequency $duration);
-  return unless $self->server->send(MP3::Napster->I_HAVE,$message);
+  warn "I_HAVE $message\n" if $self->server->debug;
+  return unless $self->server->send_command(I_HAVE,$message);
 
-  warn "share_file(): mapping $sharename to $path\n" if $MP3::Napster::DEBUG_LEVEL > 0;  
+  warn "share_file(): mapping $sharename to $path\n" if $self->server->debug > 0;
   my $nick = $self->server->nickname;
   my $song = MP3::Napster::Song->new_from_browse($self->server,
 						  qq($nick "$path" $md5 $size $bitrate $frequency $duration));
@@ -59,24 +60,32 @@ sub share_file {
   return $song;
 }
 
-sub unshare : locked method {
+sub unshare {
   my $self = shift;
   my $sharename = shift;
+  $self->server->send_command(REMOVE_FILE,$sharename);
   delete $self->{song}{$sharename};
+}
+
+sub unshare_all {
+  my $self = shift;
+  $self->server->send_command(REMOVE_ALL);
+  $self->{song} = {};
 }
 
 sub sharename {
   my $self = shift;
   my ($path,$tag) = @_;
+  my $share;
   # have a title and artist
   if ($tag->{ARTIST} and $tag->{TITLE}) {
-    my $title = "[$tag->{ARTIST}] $tag->{TITLE}.mp3";
-    $title =~ s![/\\]!_!g; # nuke [back]slashes
-    return $title;
+    $share = "$tag->{ARTIST} - $tag->{TITLE}.mp3";
+    $share =~ s![/\\]!_!g; # nuke [back]slashes
+  } else {
+    # otherwise just return filename
+    ($share) = $path =~ m!([^/\\]+)$!;
   }
-  # otherwise just return filename
-  my ($filename) = $path =~ m!([^/\\]+)$!;
-  return $filename;
+  return "Z:\\nap\\$share";
 }
 
 
@@ -125,11 +134,11 @@ sub mp3info {
   my $md5 = $ctx->hexdigest;
 
   # now get the MP3 info for the file
-  return unless my $mp3 = MP3::Info::get_mp3info($path);
+  return unless my $mp3 = eval { MP3::Info::get_mp3info($path) };
   my $duration = $mp3->{MM}*60 + $mp3->{SS};  # total duration in seconds
 
   # and the ID tag info
-  my $tag = MP3::Info::get_mp3tag($path) || {};
+  my $tag = eval { MP3::Info::get_mp3tag($path) } || {};
 
   # this prevents an uninitialized variable warning
   foreach (keys %$tag) { $tag->{$_} ||= '' }
@@ -156,7 +165,6 @@ sub skip_header {
   return unless defined &MP3::Info::_get_v2tag;
   my $tag = MP3::Info::_get_v2tag($fh);
   my $pos = tell($fh);
-  warn "file has ID3 tag, skipped $pos bytes\n"  if $MP3::Napster::DEBUG_LEVEL > 2;
 }
 
 1;

@@ -14,37 +14,37 @@ use overload
   '""'       => 'name',
   'cmp'      => 'cmp';
 
-sub new : locked {
+sub new {
   my $pack = shift;
-  my $server = shift;
-  my $name = shift;
+  my ($server,$name) = @_;
   return bless { name       => $name,
 		 user_count => undef,
 		 topic      => undef,
 		 server     => $server },$pack;
 }
 
-sub new_from_list : locked {
+sub new_from_list {
   my $pack = shift;
   my $server = shift;
   my ($name,$users,$topic) = shift =~ /^(\S+) (\d+) (.*)/;
-  return bless { name       => $name,
+  return bless { name       => ucfirst lc $name,
 		 user_count => $users,
 		 topic      => $topic,
 		 server     => $server },$pack;
 }
 
-sub name : locked method { 
-  shift->{name}  
+sub name {
+  shift->{name};
 }
-sub users : locked method {
+
+sub users {
   return unless my $server = $_[0]->server;
   return $server->users($_[0]->name);
 }
 sub cmp {
   my ($a,$b,$reversed) = @_;
-  return $reversed ? $a->name cmp $b
-                   : $b cmp $a->name;
+  return $reversed ? $b cmp $a->name
+                   : $a->name cmp $b;
 }
 sub join {
   my $self = shift;
@@ -55,6 +55,10 @@ sub part {
   my $self = shift;
   return unless my $nap = $self->{server};
   $nap->part_channel($self);
+}
+
+sub DESTROY{
+  my $self = shift;
 }
 
 1;

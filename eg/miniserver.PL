@@ -22,8 +22,10 @@ print OUT <<'!NO!SUBS!';
 # teeny tiny napster server for use in regression tests
 
 use strict;
-use Thread;
+use IO::Select;
 use IO::Socket;
+
+use Errno 'EWOULDBLOCK';
 
 my $PORT = shift || 9999;
 
@@ -74,8 +76,11 @@ use constant MOTD               => 621;
 use constant CHANGE_DATA_PORT   => 703;
 use constant PING               => 751;
 use constant PONG               => 752;
+use constant LIST_CHANNELS2     => 827;
 use constant LIST_USERS         => 830;
 use constant USER_LIST_ENTRY    => 825;
+
+sub dispatch($\$);
 
 # this test server uses globals instead of objects.  oh well.
 my (%REGISTRATION,%NICKNAMES,%SHARED,%USER_INDEX,%MD5_INDEX,%CHANNEL_USERS);
@@ -87,7 +92,7 @@ my %CHANNELS = (
 		'Lobby'       => 'The "what do the colored dots mean?" channel',
 		);
 my $MOTD = <<END;
-Welcome to the teeny tiny napster server (perlster).
+Welcome to the teeny tiny napster server.
 Anything goes here because nothing\'s happening!
 END
 ;
@@ -97,48 +102,105 @@ my %STAT_CODES = (
 		  DOWNLOADING()       => 1,
 		  DOWNLOAD_COMPLETE() => 1,
 		  );
+my (%IN,%OUT,%FH);  # buffers
+# tie %IN,'Tie::RefHash';  # so we can use references as keys
+# tie %OUT,'Tie::RefHash';
 
 $SIG{INT} = sub { exit 1; };
-
-END { 
-  foreach (Thread->list) {
-    next if $_->equal(Thread->self);
-    $_->eval;
-    warn $@ if $@;
-  }
-}
 
 $|=1;
 my @args = (Listen => 20,
 	    Proto => 'tcp',
 	    Reuse => 1);
-push (@args,LocalPort => $PORT) if $PORT > 0;
+push(@args,LocalPort => $PORT) if $PORT > 0;
 my $listen = IO::Socket::INET->new(@args) || die "Can't open listen socket: $!";
+$listen->blocking(0);
 
 print "miniserver process=$$ listening on port=",$listen->sockport,"\n";
-while (my $sock = $listen->accept) {
-  warn "accepted a new connection from ",$sock->peerhost;
-  Thread->new(\&handle_connection,$sock);
-}
 
-sub handle_connection {
-  my $sock = shift;
-  my $host = $sock->peerhost;
-  # read and dispatch
-  my $data;
-  while (my $bytes = sysread($sock,$data,4)) { # read a message
-    my ($length,$type) = unpack("vv",$data);
-    last if $length && !sysread($sock,$data,$length);
-    last unless dispatch($sock,$type,$data);
+my $in  = IO::Select->new($listen);
+my $out = IO::Select->new;
+
+my $t = 0;
+
+while (1) {
+  warn "polling...",$t++,"\n";
+  my ($readers,$writers) = IO::Select->select($in,$out,undef);
+
+  for my $r (@$readers) {
+
+    if ($r eq $listen) {
+      my $newsock = $r->accept or next;
+      $newsock->blocking(0);
+      new_connection($newsock);
+      $in->add($newsock);
+      next;
+    } else {
+      my $bytes = sysread($r,$IN{$r},2048,length $IN{$r});
+      if ($bytes > 0) {
+	dispatch($r,$IN{$r});
+      } elsif (!defined($bytes) && $! == EWOULDBLOCK) {
+	next;
+      } else { # error or eof occurred
+	warn $r->peerhost,": $!";
+	$in->remove($r);
+	clean_up($r);
+	next;
+      }
+    }
   }
 
-  # clear out all information about this user
-  warn "session from $host done";
-  clean_up($sock);
-  close $sock;
+  for my $w (@$writers) {
+    next unless $OUT{$w};
+    local $SIG{PIPE} = 'IGNORE';
+    my $bytes = syswrite($w,$OUT{$w});
+    if ($bytes > 0) {
+      substr($OUT{$w},0,$bytes) = '';
+    } elsif (!$bytes) {
+      next if !defined($bytes) && $! == EWOULDBLOCK;
+    } else {
+      # a pipe or some other type of error occurred
+      warn $w->peerhost,": $!";
+      $out->remove($w);
+      clean_up($w);
+    }
+    $out->remove($w) unless length $OUT{$w};
+    $in->add($w)     if length $OUT{$w} < 10_000;
+  }
+
+  # fix up the select objects
+  foreach (keys %OUT) {
+    $out->add($FH{$_})    if length $OUT{$_} > 0;
+    $in->remove($FH{$_})  if length $OUT{$_} >= 10_000;
+  }
+
 }
 
-sub dispatch {
+sub new_connection {
+  my $sock = shift;
+  warn "accepted a new connection from ",$sock->peerhost;
+  $IN{$sock} = '';
+  $OUT{$sock} = '';
+  $FH{$sock} = $sock;
+}
+
+sub dispatch ($\$) {
+  my ($sock,$buffer) = @_;
+
+  while (length $$buffer >= 4) { # message length
+    my $body;
+    my ($length,$event) = unpack("vv",$$buffer);
+    if ($length > 0) { # try to get body
+      last unless length $$buffer >= 4+$length;
+      $body = substr($$buffer,4,$length);
+    }
+    substr($$buffer,0,4+$length) = '';
+    return unless do_event($sock,$event,$body);
+  }
+  1;
+}
+
+sub do_event {
   my ($sock,$type,$data) = @_;
   warn "processing $type message from ",$sock->peerhost,"\n";
 
@@ -162,6 +224,7 @@ sub dispatch {
 
   return set_data_port($sock,$data)  if $type == CHANGE_DATA_PORT;
   return list_channels($sock,$data)  if $type == LIST_CHANNELS;
+  return list_channels($sock,$data)  if $type == LIST_CHANNELS2;
   return join_channel($sock,$data)   if $type == JOIN_CHANNEL;
   return part_channel($sock,$data)   if $type == PART_CHANNEL;
   return list_users($sock,$data)     if $type == LIST_USERS;
@@ -176,16 +239,12 @@ sub dispatch {
 
 sub nickname {
   my $sock = shift;
-#  my $peer = getpeername($sock) || return;
-#  my ($port,$addr) = sockaddr_in($peer);
-  lock %NICKNAMES;
   $NICKNAMES{fileno $sock} = shift if @_;
   return $NICKNAMES{fileno $sock};
 }
 
 sub registration {
   my $nickname = shift;
-  lock %REGISTRATION;
   $REGISTRATION{$nickname} = shift if @_;
   return $REGISTRATION{$nickname};
 }
@@ -193,20 +252,17 @@ sub registration {
 sub shared {
   my $nickname = shift;
   my $path = shift;
-  lock %SHARED;
   $SHARED{$nickname,$path} = shift if @_;
   return $SHARED{$nickname,$path};
 }
 
 sub md5_index {
   my ($nickname,$path,$md5) = @_;
-  lock %MD5_INDEX;
   $MD5_INDEX{$md5}{$nickname,$path}++;
 }
 
 sub user_index {
   my ($nickname,$path) = @_;
-  lock %USER_INDEX;
   $USER_INDEX{$nickname}{$path} = join $;,$nickname,$path;
 }
 
@@ -245,7 +301,7 @@ sub login {
   lock %USER_INDEX;
   $USER_INDEX{$nickname} = {};
   msg($sock,LOGIN_ACK,'anon@napster.com');
-  
+
   # send the MOTD
   foreach (split "\n",$MOTD) {
     msg($sock,MOTD,$_);
@@ -256,31 +312,25 @@ sub login {
 
 sub clean_up {
   my $sock = shift;
+  warn $sock->peerhost,' is exiting';
   return unless my $nickname = nickname($sock);
   unshare_all($nickname);  # get rid of all shared songs
   part_all($sock,$nickname);     # part all channels
-  {
-    lock %REGISTRATION;
-    delete $REGISTRATION{$nickname};
-  }
-  {
-    lock %NICKNAMES;
-    delete $NICKNAMES{fileno $sock};
-  }
+  delete $REGISTRATION{$nickname};
+  delete $NICKNAMES{fileno $sock};
+  delete $OUT{$sock};
+  delete $IN{$sock};
+  delete $FH{$sock}
 }
 
 sub msg {
   my $sock = shift;
-  lock $sock;
   my ($msg,$data) = @_;
   warn "sending $msg\n";
   $data ||= '';
   my $length = length $data;
   my $message_data = pack("vva*",$length,$msg,$data);
-  while (length $message_data) {
-    return unless (my $bytes = syswrite($sock,$message_data));
-    substr($message_data,0,$bytes) ='';
-  }
+  $OUT{$sock} .= $message_data;
   1;
 }
 
@@ -289,7 +339,6 @@ sub set_data_port {
   my $port = shift;
   my $nick = nickname($sock) or return 1;
 
-  lock $REGISTRATION{$nick};
   $REGISTRATION{$nick}{port} = $port;
   warn "changed port for $nick to $port\n";
 }

@@ -21,11 +21,19 @@ sub test {
 }
 
 # basic tests of functionality
-$MP3::Napster::DEBUG_LEVEL = 0;
 
+#2
 test(defined(&WHOIS_RESPONSE),'imported message constants not defined');
+
+#3
 test($MP3::Napster::MESSAGES{WHOIS_RESPONSE()} eq 'WHOIS_RESPONSE','reverse mapped constants not defined');
+
+#4
 test(defined(&LINK_14K),'imported linkspeed constants not defined');
+
+#5
 test(!defined(MP3::Napster->new('localhost:0')),"shouldn't connect but did!");
+
+#6
 test(MP3::Napster->error eq 'connection refused',"wrong error message on failed connect, got ",MP3::Napster->error);
 

@@ -16,11 +16,11 @@ use overload
   '""'   => 'name',
   'cmp'      => 'cmp';
 
-sub new_from_search : locked {
+sub new_from_search {
   my $pack = shift;
   my ($server,$song_data) = @_;
   my ($path,$md5,$size,$bitrate,$freq,$length,$nick,$ip,$link) = 
-    $song_data =~ /^"([^\"]+)" (\S+) (\d+) (\d+) (\d+) (\d+) (\S+) (\d+) (\d{1,2})$/;
+    $song_data =~ /^"([^\"]+)" (\S+) (\d+) (\d+) (\d+) (\d+) (\S+) (\d+) (\d{1,2})/;
 
   # extract name of file from path 
   # different logic for UNIX and Windows -- don't know about Macs
@@ -40,7 +40,7 @@ sub new_from_search : locked {
   # and the size repeated again
   $md5 =~ s/-\d+$//;
 
-  return bless { 
+  return bless {
 		name    => $name,
 		path    => $path,
 		hash    => $md5,
@@ -54,9 +54,10 @@ sub new_from_search : locked {
 		length  => $length,
 	       },$pack;
 }
-sub new_from_browse : locked {
+sub new_from_browse {
   my $pack = shift;
   my ($server,$song_data) = @_;
+
   my ($nick,$path,$md5,$size,$bitrate,$freq,$length) = 
     $song_data =~ /^(\S+) "([^\"]+)" (\S+) (\d+) (\d+) (\d+) (\d+)$/;
 
@@ -75,7 +76,7 @@ sub new_from_browse : locked {
   # and the size repeated again
   $md5 =~ s/-\d+$//;
 
-  return bless { 
+  return bless {
 		name    => $name,
 		path    => $path,
 		hash    => $md5,
@@ -83,30 +84,41 @@ sub new_from_browse : locked {
 		bitrate => $bitrate,
 		freq    => $freq,
 		owner   => MP3::Napster::User->new($server,$nick,MP3::Napster->LINK_UNKNOWN),
+		link    => MP3::Napster::LINK_UNKNOWN,
 		server  => $server,
 		length  => $length,
 	       },$pack;
 }
-sub name : locked method {
-  $_[0]->{name} = $_[1] if defined $_[1];
-  return $_[0]->{name};
+sub name {
+  my $self = shift;
+  my $d = $self->{name};
+  if (defined(my $new = shift)) {
+    my ($title) = $new =~ m!([^/\\]+)$!;  # get rid of residual pathname
+    $self->{name} = $title;
+  }
+  $d;
 }
-sub title : locked method { 
-  shift->{name} 
-}
+sub title {  shift->{name} }
+
 sub cmp {
   my ($a,$b,$reversed) = @_;
   return $reversed ? $a->name cmp $b
                    : $b cmp $a->name;
 }
-sub link : locked method { 
+
+sub link {
   return '' unless defined $_[0]->{link};
-  $MP3::Napster::LINK{shift->{link}} 
+  $MP3::Napster::LINK{shift->link_code}
 }
-sub link_code : locked method { 
-  shift->{link}  
+
+sub link_code  {
+  my $self = shift;
+  my $d = $self->{link};
+  $self->{link} = shift if @_;
+  $d;
 }
-sub download : locked method {
+
+sub download {
   my $self = shift;
   my $default_path = join '/',$self->server->download_dir,$self->name;
   return $self->server->download($self,shift || $default_path);

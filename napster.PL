@@ -21,7 +21,7 @@ $Config{startperl} -w
 print OUT <<'!NO!SUBS!';
 use strict;
 use lib './blib/lib';
-use vars qw(@SEARCH $COUNTER %OPT);
+use vars qw(@SEARCH %UNLINK $COUNTER %OPT);
 
 BEGIN {
   use Getopt::Std;
@@ -56,13 +56,6 @@ use IO::File;
 use MP3::Napster;
 use Getopt::Std;
 
-my $READLINE;
-if (-t STDIN && !defined($ENV{EMACS})) {
-  $READLINE = new Term::ReadLine $0
-    if eval { require Term::ReadLine };
-  $READLINE->ornaments(',,md,me');
-}
-
 use constant LINK_SPEED => LINK_UNKNOWN;
 use constant DOWNLOAD_PATH => './songs';
 use constant PORT => 6699;
@@ -83,18 +76,17 @@ unless ($OPT{l} =~ /^\d+$/ && $OPT{l} <= LINK_T3) {
 }
 
 $| = 1;
-$MP3::Napster::DEBUG_LEVEL = $OPT{v} if defined $OPT{v};
 
 warn "[ connecting... ]\n";
 my $addr = shift;
 
-my $nap = MP3::Napster->new($addr) 
+my $nap = MP3::Napster->new($addr)
   || die "Couldn't connect: ",MP3::Napster->error,"\n";
+$nap->debug($OPT{v}) if defined $OPT{v};
 
 END {
   if (defined $nap) {
     print "[ logging out, wait... ]\n";
-    $nap->disconnect();
   }
 }
 
@@ -105,7 +97,7 @@ $nap->download_dir($OPT{d});
 
 setup_callbacks($nap);
 
-login()    || die "Couldn't log in\n"   unless $OPT{r};
+login()    || die "\n"   unless $OPT{r};
 register() || die "Couldn't register\n" if $OPT{r};
 print "\n";
 
@@ -120,57 +112,57 @@ while (my $song = readdir(S)) {
   $nap->share("$OPT{u}/$song",1) && $shared_songs++;
 }
 closedir S;
-my $port = $nap->listen($OPT{p}) if $OPT{p};
+
+$nap->allow_setport(1);
+my $port = $nap->port;
 print "[ sharing $shared_songs songs ",$port?"on port $port":"(firewalled)"," ]\n";
 
 print "\n";
 
-while (defined($_ = getline())) {
-  chomp;
+$nap->command_processor(\&commands);
+$nap->run;
+print "Connection closed by server.\n";
+exit 0;
+
+sub commands {
+  shift;      # get rid of server object
+  $_ = shift; # read command
   if (m!^/!) { # a command
     my ($command,$args) = m!^/(\w+)\s*(.*)!;
     $command = lc $command;
-    $nap->channels,next         if $command eq 'channels';
-    join_channel($args),next    if $command eq 'join';
-    part_channel($args),next    if $command eq 'part';
-    search($args),next          if $command eq 'search';
-    msg($args),next             if $command eq 'msg';
-    browse($args),next          if $command eq 'browse';
-    download($args),next        if $command eq 'download' or $command eq 'g';
-    status($args),next          if $command eq 'status';
-    play($args),next            if $command eq 'play';
-    users($args),next           if $command eq 'users';
-    whois($args),next           if $command eq 'whois' or $command eq 'finger';
-    ping($args),next            if $command eq 'ping';
-    abort($args),next           if $command eq 'abort';
-    boot($args),next            if $command eq 'boot';
-    port($args),next            if $command eq 'port';
-    password($args),next        if $command eq 'password';
-    email($args),next           if $command eq 'email';
-    exit(0),next                if $command eq 'quit';
-    help(); next;
+    $nap->channels,return         if $command eq 'channels';
+    join_channel($args),return    if $command eq 'join';
+    part_channel($args),return    if $command eq 'part';
+    search($args),return          if $command eq 'search';
+    msg($args),return             if $command eq 'msg';
+    browse($args),return          if $command eq 'browse';
+    download($args),return        if $command eq 'download' or $command eq 'g';
+    status($args),return          if $command eq 'status';
+    play($args),return            if $command eq 'play';
+    capture($args),return         if $command eq 'capture';
+    users($args),return           if $command eq 'users';
+    whois($args),return           if $command eq 'whois' or $command eq 'finger';
+    ping($args),return            if $command eq 'ping';
+    abort($args),return           if $command eq 'abort';
+    boot($args),return            if $command eq 'boot';
+    port($args),return            if $command eq 'port';
+    password($args),return        if $command eq 'password';
+    email($args),return           if $command eq 'email';
+    exit(0)                       if $command eq 'quit';
+    help();
   }
   speak($_) if /\S/;
   help() unless /\S/;
 }
 
-sub getline {
-  if ($READLINE) {
-    my $l =  $READLINE->readline('');
-    $READLINE->addhistory($l) if $l;
-    return $l;
-  }
-  return scalar <>;
-}
-
 sub login {
   print "login: ";
   chomp (my $login = <>);
-  print "password: ";
+  print STDERR "password: ";
   system "stty -echo </dev/tty" unless $ENV{EMACS};
   chomp (my $pass = <>);
   system "stty echo </dev/tty" unless $ENV{EMACS};
-  print "\n";
+  print STDERR "\n";
   warn "[ logging in... ]\n";
   if (my $email = $nap->login($login,$pass,$OPT{l},$OPT{p})) {
     print "[ Logged in with email $email ]\n";
@@ -184,7 +176,7 @@ sub login {
 sub register {
   print "new nickname: ";
   chomp (my $login = <>);
-  my $pass = get_password();
+  my $pass = get_password(1);
   print "link speed [14K 28K 33K 56K 64K 128K CABLE DSL T1 T3]: ";
   chomp (my $link_speed = <>);
   $link_speed = eval "\ULINK_$link_speed\E" || 0;
@@ -203,7 +195,7 @@ sub port {
   my $arg = shift;
   return unless $arg =~ /^\d+$/;
   print "* Changing port to $arg\n";
-  $nap->process_message(SET_DATA_PORT,$arg);
+  $nap->process_event(SET_DATA_PORT,$arg);
 }
 
 sub password {
@@ -224,7 +216,7 @@ sub get_password {
   print "${new}password: ";
   chomp (my $pass1 = <>);
   print "\n";
-  print "re-enter ${new}password: ";  
+  print "Re-enter ${new}password: ";
   chomp (my $pass2 = <>);
   print "\n";
   system "stty echo </dev/tty" unless $ENV{EMACS};
@@ -240,7 +232,6 @@ sub join_channel {
   foreach (split /\s+/,$chan) {
     print "[ Can't join $_ ",$nap->error," ]\n"
       unless $nap->join_channel($_);
-      
   }
   my $channels = join(', ',$nap->enrolled_channels) || 'no channels';
   print "[ Enrolled in $channels ]\n";
@@ -291,8 +282,9 @@ sub search {
   $COUNTER = 0;
   print "[ searching... ]\n";
   @SEARCH = sort {
-    $a->owner cmp $b->owner
-      || $a cmp $b } $nap->search($args);
+    $a->link_code <=> $b->link_code
+      || $a cmp $b 
+    } $nap->search($args);
   print_search_results;
   print "[ search done. ",scalar @SEARCH," songs found ]\n";
 }
@@ -338,6 +330,22 @@ sub play {
   download($args,$fh);
 }
 
+sub capture {
+  my $args = shift;
+  my (@num) = $args =~ /(\d+)/g;
+  my $song = $SEARCH[$num[0]-1];
+  unless ($song) {
+    print "[ No such song identified on last search/browse ]\n";
+    return;
+  }
+  my $localfile = $nap->download_dir . '/' . quotemeta($song);
+  my $player = PLAYER;
+  my $fh = IO::File->new("| tee $localfile | $player");
+  print "[ Couldn't open pipe to tee and $player: $! ] \n" unless $fh;
+  $UNLINK{$song} = $nap->download_dir . '/' . $song;
+  download($args,$fh);
+}
+
 # print download status
 sub status {
   my $p;
@@ -347,7 +355,7 @@ sub status {
     my $status = $t->status;
     my $label = $t->direction eq 'upload' ? 'uploading to '.$t->nickname
                                           : 'downloading from '.$song->owner;
-    print "[ ($label) $song: $status, ",$t->bytes,"/",$t->expected_size," bytes ]\n";
+    print "[ ($label) $song: $status, ",$t->transferred,"/",$t->size," bytes ]\n";
   }
   print "[ no uploads/downloads in progress ]\n" unless $p;
 }
@@ -357,10 +365,9 @@ sub abort {
   my $args = shift;
   $args ||= '.';  # by default, abort 'em all
   for my $d ($nap->downloads) {
-    my $song = $d->title;
+#    my $song = $d->title;
     next unless $d =~ /$args/;
-    print "[ $song: aborting ]\n";
-    $d->done(1);
+    $d->abort;
   }
 }
 
@@ -369,18 +376,17 @@ sub boot {
   my $args = shift;
   $args ||= '.';  # by default, abort 'em all
   for my $d ($nap->uploads) {
-    my $song = $d->title;
+#    my $song = $d->title;
     next unless $d =~ /$args/;
-    print "[ $song: aborting ]\n";
-    $d->done(1);
+    $d->abort;
   }
 }
 
 sub whois {
   my $args = shift;
   foreach my $u (split /\s+/,$args) {
-    $u = $SEARCH[$u-1]->owner 
-      if $u =~ /^\d+/ && defined $SEARCH[$u-1];
+    $u = $SEARCH[$u-1]->owner
+      if $u =~ /^\d+$/ && defined $SEARCH[$u-1];
     if (my $user = $nap->whois($u)) {
       my $profile = $user->profile;
       $profile =~ s/^/\t/gm;
@@ -417,6 +423,7 @@ sub help {
        /download <18> <20> <3>        download songs 18, 20 and 3
        /g <18> <20> <3>               same as /download
        /play <18> <20> <3>            play songs 18, 20 and 3 (requires mpg123 installed)
+       /capture <18> <20> <3>         simultaneously play and capture songs 18, 20 and 3
        /abort <regexp>                abort downloads matching regular expression (default all)
        /boot <regexp>                 abort uploads matching regular expression (default all)
        /status                        status of uploads/downloads
@@ -432,80 +439,96 @@ END
 sub setup_callbacks {
   my $nap = shift;
 
-  my $user_speaks = sub { 
-    my ($nap,$message) = @_;
+  my $s = sub {
+    my($server,$ec,$message) = @_;
+    my $event = $server->event;
+    warn "$event: $message\n";
+  };
+
+#  $nap->callback($_,$s) for (0..900);
+
+  my $user_speaks = sub {
+    my ($nap,$ec,$message) = @_;
     my ($channel,$nickname,$mess) = $message =~/^(\S+) (\S+) (.*)/;
     print "[$channel] <$nickname> $mess\n";
   };
 
   my $private_msg = sub { 
-    my ($nap,$message) = @_;
+    my ($nap,$ec,$message) = @_;
     my ($nickname,$mess) = $message =~/^(\S+) (.*)/;
     print "$nickname tells you: $mess\n";
   };
 
   my $user_joins = sub {
-    my ($nap,$user) = @_;
+    my ($nap,$ec,$user) = @_;
     my $channel = $user->current_channel;
     my $sharing = $user->sharing;
     my $link    = $user->link;
     print "* $user joins $channel: sharing $sharing files on a $link line\n";
   };
-  
+
   my $user_exits = sub {
-    my ($nap,$user) = @_;
+    my ($nap,$ec,$user) = @_;
     my $channel = $user->current_channel;
     print "* $user has left $channel\n";
   };
-  
+
   my $list_channel = sub {
-    my ($nap,$channel) = @_;
+    my ($nap,$ec,$channel) = @_;
     printf "[ %-15s %-40s %3d users ]\n",$channel,$channel->topic,$channel->user_count;
   };
-  
+
   my $channel_topic = sub {
-    my ($nap,$message) = @_;
+    my ($nap,$ec,$message) = @_;
     my ($channel,$banner) = $message =~ /^(\S+) (.*)/;
     print "[ \U$channel\E: $banner ]\n";
   };
-  
-  my $stats =  sub { 
-    my ($users,$files,$gigs) = split /\s+/,$_[1];
+
+  my $stats =  sub {
+    my ($users,$files,$gigs) = split /\s+/,$_[2];
     print "\t** SERVER STATS: $files files, $users users, ($gigs gigs) **\n";
   };
 
   my $transfer_started = sub { 
-    my ($nap,$transfer) = @_;
+    my ($nap,$ec,$transfer) = @_;
     return unless $transfer->direction eq 'upload';
     my $song = $transfer->song;
     my $nick = $transfer->remote_user;
     print "\t[ $nick has begun to download $song ]\n";
   };
-  
-  my $transfer_progress = sub { 
-    my ($nap,$transfer) = @_;
-    my ($bytes,$expected) = ($transfer->bytes,$transfer->expected_size);
+
+  my $transfer_status = sub {
+    my ($nap,$ec,$transfer) = @_;
+    my $status = $transfer->status;
+    print "\t[ $transfer: $status ]\n";
+  };
+
+  my $transfer_progress = sub {
+    my ($nap,$ec,$transfer) = @_;
+    my ($bytes,$expected) = ($transfer->transferred,$transfer->size);
     print "\t[ $transfer: $bytes / $expected bytes ]\n";
   };
-  
-  my $transfer_done = sub { 
-    my ($nap,$transfer) = @_;
+
+  my $transfer_done = sub {
+    my ($nap,$ec,$transfer) = @_;
     my $song = $transfer->song;
+    my $file = $transfer->local_path || $UNLINK{$song};
     print "\t[ $song done: ",$transfer->status," ]\n";
     if ($transfer->direction eq 'download' &&
-	$transfer->status ne 'transfer complete' && 
-	$transfer->local_path) {
-      print "\t[ $song incomplete: unlinking file ]\n";
-      unlink $transfer->local_path;
+	$transfer->status ne 'transfer complete' &&
+	$file) {
+      print "\t[ $song incomplete: unlinking $file ]\n";
+      unlink $file;
+      delete $UNLINK{$song};
     }
   };
 
   my $error = sub {
-    my ($nap,$msg) = @_;
+    my ($nap,$code,$msg) = @_;
     print "* error: $msg\n";
   };
-  
-  $nap->callback(PUBLIC_MESSAGE_RECVD,$user_speaks);
+
+  $nap->callback(PUBLIC_MESSAGE,      $user_speaks);
   $nap->callback(PRIVATE_MESSAGE,     $private_msg);
   $nap->callback(USER_JOINS,          $user_joins);
   $nap->callback(USER_DEPARTS,        $user_exits);
@@ -514,13 +537,13 @@ sub setup_callbacks {
   $nap->callback(CHANNEL_TOPIC,       $channel_topic);
   $nap->callback(SERVER_STATS,        $stats);
   $nap->callback(TRANSFER_STARTED,    $transfer_started);
+  $nap->callback(TRANSFER_STATUS,     $transfer_status);
   $nap->callback(TRANSFER_IN_PROGRESS,$transfer_progress);
   $nap->callback(TRANSFER_DONE,       $transfer_done);
-  $nap->callback(MOTD,                sub { print defined $_[1] ? "* $_[1]\n" : "\n"; } );
-  $nap->callback(PING,                sub { print "* $_[1] is pinging us\n"; } );
-  $nap->callback(PONG,                sub { print "* Got a PONG from $_[1]\n"; } );
-  $nap->callback(USER_OFFLINE,        sub { print "* $_[1] is offline\n"; } );
-  $nap->callback(SET_DATA_PORT,       sub { print "* Changing data port to $_[1]\n"; } );
+  $nap->callback(MOTD,                sub { print defined $_[2] ? "* $_[2]\n" : "\n"; } );
+  $nap->callback(PING,                sub { print "* $_[2] is pinging us\n"; } );
+  $nap->callback(PONG,                sub { print "* Got a PONG from $_[2]\n"; } );
+  $nap->callback(SET_DATA_PORT,       sub { print "* Changing data port to $_[2]\n"; } );
   $nap->callback(DATA_PORT_ERROR,     sub { print "* Server: data port is misconfigured\n"; } );
 }
 __END__

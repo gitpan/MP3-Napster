@@ -1,4 +1,3 @@
-- API for unsharing files
-- Timeout hung uploads
-- handle the USER_OFFLINE message, which may be sent asynchronously when user refuses a passive transfer
 - perl-user limits on file sharing
+- restore interrupted transfers
+

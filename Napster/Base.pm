@@ -3,13 +3,12 @@ require Carp;
 
 # provide an AUTOLOAD function for stereotyped field access
 sub AUTOLOAD {
-  lock $AUTOLOAD;  # so that it won't change beneath us!
   my ($pack,$field_name) = $AUTOLOAD=~/(.+)::([^:]+)$/;
   my $func;
 
   if (exists ${"$pack\:\:RDONLY"}{$field_name}) {
     $func = <<END;
-sub $AUTOLOAD : locked method {
+sub $AUTOLOAD {
     my \$self = shift;
     Carp::confess("Attempt to modify read-only field $field_name") if \@_;
     return \$self->{$field_name};
@@ -19,7 +18,7 @@ END
 
   } elsif (exists ${"$pack\:\:FIELDS"}{$field_name}) {
     $func = <<END;
-sub $AUTOLOAD : locked method {
+sub $AUTOLOAD {
     my \$self = shift;
     \$self->{$field_name} = shift if \@_;
     return \$self->{$field_name};
