@@ -1,3 +1,9 @@
+2.04	Thu Mar 15 22:48:14 EST 2001
+	- On Win32 systems complains if an attempt is made
+	  to use interactive (e.g. from command line)
+2.03	- Don't use this version, it broke everything
+2.02    Feb 3 2000
+	- Fixes to break cyclic dependencies when compiled on Windows systems
 2.01	Thu Dec  7 12:37:26 EST 2000
 	- discovered a misfeature in IO::Socket::INET in 5.00503.  Now requires 5.6.0.
 	

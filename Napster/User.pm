@@ -2,7 +2,9 @@ package MP3::Napster::User;
 
 # user object
 use strict;
+use vars '$VERSION';
 use MP3::Napster();
+$VERSION = '1.01';
 
 use overload
   '""'       => 'name',
@@ -23,7 +25,8 @@ sub new_from_user_entry {
 		 sharing         => $sharing,
 		 link            => $link_type,
 		 current_channel => MP3::Napster::Channel->new($server,$channel),
-		 server          => $server },$pack;
+		 server          => $server,
+	       },$pack;
 }
 
 sub new_from_whois {
@@ -31,18 +34,29 @@ sub new_from_whois {
   my ($server,$message) = @_;
   my ($nick,$level,$time,$channels,$status,$sharing,$downloads,$uploads,$link_type,$client) = 
     $message =~ /^(\S+) "([^\"]+)" (\d+) "([^\"]*)" "([^\"]+)" (\d+) (\d+) (\d+) (\d+) "([^\"]+)"/;
-  return bless {name=>$nick,link=>$link_type,server=>$server,
-		time=>$time,channels=>[split /\s+/,$channels],status=>$status,
-		sharing=>$sharing,downloads=>$downloads,uploads=>$uploads,
-		level=>$level,client=>$client
-	       },$pack;  
+  return bless { name       => $nick,
+		 link       => $link_type,
+		 server     => $server,
+		 time       => $time,
+		 channels   => [split /\s+/,$channels],
+		 status     => $status,
+		 sharing    => $sharing,
+		 downloads  => $downloads,
+		 uploads    => $uploads,
+		 level      => $level,
+		 client     => $client,
+	       },$pack;
 }
 
 sub new_from_whowas {
   my $pack = shift;
   my ($server,$message) = @_;
   my ($nick,$level,$last_seen) =  $message =~ /^(\S+) (\S+) (\d+)/;
-  return bless {name=>$nick,level=>$level,last_seen=>$last_seen,status=>'Offline'},$pack;  
+  return bless { name      => $nick,
+		 level     => $level,
+		 last_seen => $last_seen,
+		 status    => 'Offline'
+	       },$pack;
 }
 
 sub name   {
@@ -70,7 +84,8 @@ sub server  {
 sub current_channel   {
     my $self = shift;
     return $self->{current_channel} if $self->{current_channel};
-    return ($self->channels)[0];
+    my @channels = $self->channels or return;
+    return $channels[0];
   }
 sub time   {
   $_[0]->_fill('time')

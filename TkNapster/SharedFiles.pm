@@ -69,7 +69,7 @@ sub init {
 			 );
 
   $tree->add('/',-text=>'Local Directories');
-  for my $type ([downloads=>'folder'],[shared=>'openfolder']) {
+  for my $type ([downloads=>'folder'],[shared=>'folder']) {
     my $dir = $self->{$type->[0]};
     mkpath($dir) or croak "Can't create $type directory $dir: $!"
       unless -d $dir;
@@ -88,6 +88,8 @@ sub init {
   $tree->pack(-side=>'bottom',-expand=>1,-fill=>'both');
   $self->{tree} = $tree;
 
+  $self->setbindings();
+
   $tl->protocol(WM_DELETE_WINDOW=>[$tl => 'withdraw']);
   $tl->packPropagate(1);
   $tl;
@@ -103,14 +105,13 @@ sub refresh {
   $self->getmodes($node,\%modes);
   $tree->delete( offsprings => $node);
   $self->dir_list($dir,$dir,$node,$tree);
+
+  $tree->autosetmode;
   foreach (keys %modes) {
     next unless $tree->info(exists=>$_);
-    warn "$node is $modes{$_}\n";
-    if ($modes{$_} eq 'open') {
-      $tree->setmode($_,'open');
+    if ($modes{$_} eq 'close') {
       $tree->open($_);
-    } elsif ($modes{$_} eq 'close') {
-      $tree->setmode($_,'close');
+    } elsif ($modes{$_} eq 'open') {
       $tree->close($_);
     }
   }
@@ -124,7 +125,7 @@ sub getmodes {
   my $state = $tree->getmode($node);
   $modes->{$node} = $state;
   foreach ($tree->info(children=>$node)) {
-    $self->getmodes("$node/$_",$modes);
+    $self->getmodes($_,$modes);
   }
 }
 
@@ -168,6 +169,60 @@ sub translate {
   $path =~ s!^/SHARED!$self->{shared}!;
   $path =~ s!^/DOWNLOADS!$self->{downloads}!;
   $path;
+}
+
+sub setbindings {
+  my $self = shift;
+  my $tree = $self->{tree} or return;
+
+  $tree->bind('<1>',
+	      sub {
+		my $w = shift;
+		my $e = $w->XEvent;
+		my $X = $e->X - 8;
+		my $Y = $e->Y - 8;
+		my $entry = $w->nearest($e->y);
+		return if $entry =~ m[^/(SHARED|DOWNLOADS|REMOTE)$];
+
+		$self->{source} = $entry;
+		return unless -e (my $selected = $self->translate($entry));
+
+		my $image = $w->Getimage(-d $selected ? 'folder' : 'file');
+		my $f = $w->Toplevel;
+		$f->Label(-image=>$image)->pack;
+		$f->overrideredirect(1);
+		$f->geometry("+$X+$Y");
+		$tree->bind('<B1-Motion>',[$self => 'move', $w, $f]);
+		$tree->bind('<ButtonRelease>',sub {
+			      $f->destroy;
+			      $tree->bind('<B1-Motion>'=>'');
+			      $tree->bind('<ButtonRelease>'=>'');
+			    });
+		});
+
+}
+
+sub move {
+  my $self = shift;
+  my $tree = shift;
+  my $icon = shift;
+
+  my $e = $tree->XEvent;
+  my $X = $e->X-8;
+  my $Y = $e->Y-8;
+  $icon->MoveToplevelWindow($X,$Y);
+
+  my $entry    = $tree->nearest($e->y);
+  my $current  = $self->translate($entry);
+  my $source   = $self->{source};
+
+  my $source_parent = $tree->info(parent=>$source);
+  my $parent = $tree->info(parent=>$entry);
+  my $selection = -d $current ? $entry : $parent;
+  return if $selection eq $source_parent;
+
+  $tree->selectionClear;
+  $tree->selectionSet($selection);
 }
 
 

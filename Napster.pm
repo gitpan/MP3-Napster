@@ -19,7 +19,7 @@ use Exporter;
 use vars qw($VERSION %FIELDS %RDONLY $LAST_ERROR);
 use base qw(MP3::Napster::IOLoop MP3::Napster::Base);
 
-$VERSION = '2.03';
+$VERSION = '2.04';
 
 %FIELDS = map {$_=>undef} qw(nickname email server channel registry 
 			     listener download_dir transfer_timeout attributes

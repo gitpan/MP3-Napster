@@ -156,9 +156,8 @@ sub run {
       $pause = $time_to_task;
     }
 
-    # Call select() now!!!!
-    my ($readers,$writers) = $poll->poll($pause) 
-      or croak "select(): $! -- are you on a Win32 platform?\n";
+    # Call poll() now!!!!
+    my ($readers,$writers) = $poll->poll($pause);
 
     # Is it time to run an intermittent task?
     $time_to_task -= (time-$now);
@@ -308,6 +307,11 @@ sub set_io_flags {
 
   my $select = $operation eq 'read' ? $self->{pollin} : $self->{pollout};
   if ($flag) {
+    # check for broken windows interface
+    if ($^O =~ /^Win/i && !getpeername($fh)) {
+      warn "select() is broken on non-socket filehandles on windows platforms";
+      return;
+    }
     $select->add($fh);
   } else {
     $select->remove($fh);

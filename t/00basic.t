@@ -2,7 +2,7 @@
 
 # Before `make install' is performed this script should be runnable with
 # `make test'. After `make install' it should work as `perl test.pl'
-use lib '../blib/lib';
+use lib './blib/lib','../blib/lib';
 
 ######################### We start with some black magic to print on failure.
 BEGIN { $| = 1; print "1..6\n"; }
