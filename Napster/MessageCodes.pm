@@ -8,29 +8,30 @@ $VERSION = '0.01';
 @ISA = qw(Exporter MP3::Napster::Base);
 
 @EXPORT = qw(
-	%LINK                  INVALID_ENTITY         LOGIN_OPTIONS          SERVER_STATS
-	%MESSAGES              INVALID_NICKNAME       MOTD                   SET_DATA_PORT
-	ALREADY_REGISTERED     I_HAVE                 NEW_LOGIN              TIMEOUT
-	BROWSE_REQUEST         JOIN_ACK               PART_CHANNEL           TRANSFER_ABORTED
-	BROWSE_RESPONSE        JOIN_CHANNEL           PASSIVE_DOWNLOAD_REQ   TRANSFER_DONE
-	BROWSE_RESPONSE_END    LINK_128K              PASSIVE_UPLOAD_REQ     TRANSFER_IN_PROGRESS
-	CHANGE_DATA_PORT       LINK_14K               PASSIVE_UPLOAD_REQUEST TRANSFER_STARTED
-	CHANGE_EMAIL           LINK_28K               PERMISSION_DENIED      TRANSFER_STATUS
-	CHANGE_LINK_SPEED      LINK_33K               PING                   UPLOADING
-	CHANGE_PASSWORD        LINK_56K               PONG                   UPLOAD_ACK
-	CHANNEL_ENTRY          LINK_64K               PRIVATE_MESSAGE        UPLOAD_COMPLETE
-	CHANNEL_MOTD           LINK_CABLE             PUBLIC_MESSAGE         UPLOAD_REQUEST
-	CHANNEL_TOPIC          LINK_DSL               REGISTRATION_ACK       USER_COMMAND_DATA
-	CHANNEL_USER_END       LINK_SPEED_REQUEST     REGISTRATION_REQUEST   USER_COMMENT
-	CHANNEL_USER_ENTRY     LINK_SPEED_RESPONSE    REMOVE_ALL             USER_DEPARTS
-	DATA_PORT_ERROR        LINK_T1                REMOVE_FILE            USER_JOINS
-	DISCONNECTED           LINK_T3                RESUME_REQUEST         USER_LIST_ENTRY
-	DOWNLOADING            LINK_UNKNOWN           RESUME_RESPONSE        USER_OFFLINE
-	DOWNLOAD_ACK           LIST_CHANNELS          RESUME_RESPONSE_END    USER_SIGNOFF
-	DOWNLOAD_COMPLETE      LIST_USERS             SEARCH                 USER_SIGNON
-	DOWNLOAD_REQ           LOGIN                  SEARCH_RESPONSE        WHOIS_REQ
-	ERROR                  LOGIN_ACK              SEARCH_RESPONSE_END    WHOIS_RESPONSE
-	GET_ERROR              LOGIN_ERROR            SEND_PUBLIC_MESSAGE    WHOWAS_RESPONSE
+	%LINK                  INVALID_NICKNAME       NEW_LOGIN              TIMEOUT
+	%MESSAGES              I_HAVE                 PART_CHANNEL           TRANSFER_ABORTED
+	ALREADY_REGISTERED     JOIN_ACK               PASSIVE_DOWNLOAD_REQ   TRANSFER_DONE
+	BROWSE_REQUEST         JOIN_CHANNEL           PASSIVE_UPLOAD_REQ     TRANSFER_IN_PROGRESS
+	BROWSE_RESPONSE        LINK_128K              PASSIVE_UPLOAD_REQUEST TRANSFER_QUEUED
+	BROWSE_RESPONSE_END    LINK_14K               PERMISSION_DENIED      TRANSFER_STARTED
+	CHANGE_DATA_PORT       LINK_28K               PING                   TRANSFER_STATUS
+	CHANGE_EMAIL           LINK_33K               PONG                   UPLOADING
+	CHANGE_LINK_SPEED      LINK_56K               PRIVATE_MESSAGE        UPLOAD_ACK
+	CHANGE_PASSWORD        LINK_64K               PUBLIC_MESSAGE         UPLOAD_COMPLETE
+	CHANNEL_ENTRY          LINK_CABLE             QUEUE_LIMIT            UPLOAD_REQUEST
+	CHANNEL_MOTD           LINK_DSL               REGISTRATION_ACK       USER_COMMAND_DATA
+	CHANNEL_TOPIC          LINK_SPEED_REQUEST     REGISTRATION_REQUEST   USER_COMMENT
+	CHANNEL_USER_END       LINK_SPEED_RESPONSE    REMOVE_ALL             USER_DEPARTS
+	CHANNEL_USER_ENTRY     LINK_T1                REMOVE_FILE            USER_JOINS
+	DATA_PORT_ERROR        LINK_T3                RESUME_REQUEST         USER_LIST_ENTRY
+	DISCONNECTED           LINK_UNKNOWN           RESUME_RESPONSE        USER_SIGNOFF
+	DOWNLOADING            LIST_CHANNELS          RESUME_RESPONSE_END    USER_SIGNON
+	DOWNLOAD_ACK           LIST_USERS             SEARCH                 WHOIS_REQ
+	DOWNLOAD_COMPLETE      LOGIN                  SEARCH_RESPONSE        WHOIS_RESPONSE
+	DOWNLOAD_REQ           LOGIN_ACK              SEARCH_RESPONSE_END    WHOWAS_RESPONSE
+	ERROR                  LOGIN_ERROR            SEND_PUBLIC_MESSAGE    WHOWAS_RESPONSE
+	GET_ERROR              LOGIN_OPTIONS          SERVER_STATS
+	INVALID_ENTITY         MOTD                   SET_DATA_PORT
 );
 
 use MP3::Napster::Base ('LINK' => {
@@ -104,7 +105,7 @@ use MP3::Napster::Base ('LINK' => {
 				       SET_DATA_PORT        => 613,
 				       LIST_CHANNELS        => 617, # used both to start and end channel list
 				       CHANNEL_ENTRY        => 618,
-				       USER_OFFLINE         => 620,
+				       QUEUE_LIMIT          => 620,
 				       MOTD                 => 621,
 				       DATA_PORT_ERROR      => 626,
 				       CHANGE_LINK_SPEED    => 700,
@@ -118,13 +119,14 @@ use MP3::Napster::Base ('LINK' => {
 				       LIST_USERS           => 830, # used both to start and end user list
 
 				       # pseudo events
-				       TRANSFER_STARTED     => 2000,
-				       TRANSFER_DONE        => 2001,
-				       TRANSFER_IN_PROGRESS => 2002,
-				       TRANSFER_ABORTED     => 2003,
-				       TRANSFER_STATUS      => 2004,
-				       DISCONNECTED         => 2005,
-				       USER_COMMAND_DATA    => 2006, # data ready on STDIN
+				       TRANSFER_QUEUED      => 2000,
+				       TRANSFER_STARTED     => 2001,
+				       TRANSFER_DONE        => 2002,
+				       TRANSFER_IN_PROGRESS => 2003,
+				       TRANSFER_ABORTED     => 2004,
+				       TRANSFER_STATUS      => 2005,
+				       DISCONNECTED         => 2006,
+				       USER_COMMAND_DATA    => 2007, # data ready on STDIN
 
 				       TIMEOUT              => 9999,
 				      }

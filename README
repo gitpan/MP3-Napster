@@ -13,15 +13,14 @@ Prerequisites are:
 	Digest::MD5
 	MP3::Info
 
-Perl version 5.6 or higher is required because of a misfeature in
-earlier versions of the IO::Socket::INET module that prevents
-non-blocking connects from working.
+Perl version 5.6 or higher is required in order to take advantage of
+non-blocking connects.
 
 The Digest::MD5 and MP3::Info modules can be found on CPAN.  For your
 convenience, you may install them all with the Bundle::MP3 module,
 which also installs Doug MacEachern's Xmms modules.
 
-In order to play songs directly from the napster.pl example front end, 
+In order to play songs directly from the napster.pl example front end,
 you must install the command-line MPEG-decoder mpg123 (or adapt the
 front end to use a different player).  mpg123 can be downloaded from:
 
@@ -30,14 +29,14 @@ front end to use a different player).  mpg123 can be downloaded from:
 In order to use the tknapster PerlTk front end, you must have PerlTK
 version 8.00 or higher installed.
 
-INSTALATION
------------
+INSTALLATION
+------------
 
 To install:
 
 	% perl Makefile.PL
 	% make
-	% make test  # may not work on windows systems
+	% make test  # will not work on win32 systems
 	% make install UNINST=1
 
 If "make test" fails, run "make test TEST_VERBOSE=1" and send the
@@ -48,7 +47,7 @@ which is generally a good idea.
 "make test" hasn't been tested on Windows systems and may not work.
 It takes advantage of forking and Perl pipes, which are iffy on
 non-Unix systems.  Even though some tests fail, the module may still
-work.
+work for some applications.
 
 STABILITY
 ---------
@@ -62,6 +61,10 @@ it much more stable than before!
 However, because much of the code was rewritten to accomodate this
 change, there may be bugs lurking.  Please send bug reports to me at
 the e-mail listed below.
+
+The napster.pl example application will not function on Win32 systems
+because of limitations on the four-argument form of select() under
+PerlWin32.  Other aspects of the library should function properly.
 
 DOCUMENTATION
 -------------

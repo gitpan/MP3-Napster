@@ -4,7 +4,7 @@ package MP3::Napster::IOEvent;
 
 use strict;
 use Carp;
-use Errno 'EWOULDBLOCK','EPIPE';
+use Errno qw(:POSIX);
 use MP3::Napster::IOLoop;
 
 use constant READSIZE => 1024 * 2;  # 2 k per read
@@ -36,6 +36,7 @@ sub new {
 
   $args{in}->blocking(0)  if defined $args{in};    # nonblocking mode
   $args{out}->blocking(0) if defined $args{out};   # nonblocking mode
+  binmode($args{out})     if defined $args{out};   # fix msdos problems
   my $self = bless {
 		    in        => $args{in},
 		    out       => $args{out},
@@ -43,8 +44,8 @@ sub new {
 		    outbuffer => '',
 		    loop      => $args{eventloop},
 		    eof       => 0,
-		    prior     => '00',
 		    closing   => 0,
+		    prior     => [0,0], # read and write status
 		   },$class;
 
   # process additional arguments
@@ -73,8 +74,18 @@ sub lookup_fh {
   $FH{$fn} || '';
 }
 
-sub infh       { shift->{in} }
-sub outfh      { shift->{out} }
+sub infh  {
+  my $self = shift;
+  my $in = $self->{in};  # workaround self-inflicted wounds from Tk::Event::IO
+  $in;
+#  return tied(*$in) ? tied(*$in)->handle : $in;
+}
+sub outfh {
+  my $self = shift;
+  my $out = $self->{out};  # workaround self-inflicted wounds from Tk::Event::IO
+  $out;
+#  return tied(*$out) ? tied(*$out)->handle : $out;
+}
 sub inbuffer   { shift->{inbuffer} }
 sub outbuffer  { shift->{outbuffer} }
 sub can_write  { length($_[0]->{outbuffer}) }
@@ -94,6 +105,7 @@ sub write      {
   $self->{outbuffer} .= $_ foreach @_;
   $self->out;  # try to write immediately
 }
+
 sub data {
   my $self = shift;
   my $d = $self->{inbuffer};
@@ -104,15 +116,23 @@ sub data {
 sub adjust_io {
   my $self = shift;
   my $l = $self->eventloop or return;
-  my ($r,$w) = ($self->can_read?1:0, $self->can_write?1:0);
+  warn "adjust_io\n" if $self->eventloop->debug > 2;
 
-  return if $self->{prior} eq "$r$w";  # no change from previous state
-  $self->{prior} = "$r$w";
+  my $r = $self->can_read  ? 1 : 0;
+  my $w = $self->can_write ? 1 : 0;
 
-  my $in  = $self->infh;
-  my $out = $self->outfh;
-  $l->set_io_flags($in,read=>$r)   if defined $in;
-  $l->set_io_flags($out,write=>$w) if defined $out;
+  if ($self->{prior}[0] != $r) {
+    my $in  = $self->infh;
+    $l->set_io_flags($in,read=>$r)   if defined $in;
+    $self->{prior}[0] = $r;
+  }
+
+  if ($self->{prior}[1] != $w) {
+    my $out  = $self->outfh;
+    $l->set_io_flags($out,write=>$w)   if defined $out;
+    $self->{prior}[1] = $w;
+  }
+
 }
 
 sub eof {
@@ -145,12 +165,11 @@ sub closing {
 sub in {
   my $self = shift;
   my $bytes = sysread($self->infh,$self->{inbuffer},READSIZE,length $self->{inbuffer});
-  warn "read $bytes bytes\n" if $self->eventloop->debug > 1;
+  warn "read ",$bytes+0," bytes from ",fileno($self->infh),"\n" if $self->eventloop->debug > 2;
   if (!$bytes) {
-    return '0E0' if $! == EWOULDBLOCK;    # this is OK
-    $self->eof(1);                      # end of file or error
+    $self->eof(1) unless $!{EAGAIN};   # end of file or error
     $self->adjust_io;
-    return;
+    return '0E0' ;    # this is OK
   }
   $self->incoming_data($bytes);
   $self->adjust_io;
@@ -162,11 +181,11 @@ sub out {
   my $self = shift;
   local $SIG{PIPE} = 'IGNORE';
   my $bytes = syswrite($self->outfh,$self->{outbuffer});
-  warn "wrote $bytes bytes\n" if defined($bytes) and $self->eventloop->debug > 1;
+  warn "wrote ",$bytes+0," bytes to ",fileno($self->outfh),"\n" if $self->eventloop->debug > 2;
   if (!defined $bytes) {
-    return '0E0' if $! == EWOULDBLOCK;
-    $self->handle_pipe if $! == EPIPE;
     $self->adjust_io;
+    return '0E0' if $!{EAGAIN};
+    $self->handle_pipe if $!{EPIPE};
     return;
   }
   substr($self->{outbuffer},0,$bytes) = '';
@@ -239,4 +258,5 @@ it under the same terms as Perl itself.
 
 
 =cut
+
 

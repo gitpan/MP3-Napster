@@ -11,7 +11,7 @@ use base 'MP3::Napster::IOEvent';
 use MP3::Napster::Transfer;
 
 use IO::Socket;
-use Errno 'EINPROGRESS';
+use Errno ':POSIX';
 use Carp 'croak';
 
 # new() can be called with a filehandle, in which case we
@@ -21,6 +21,7 @@ sub new {
   my $class = shift;
   my ($obj,$eventloop) = @_;
 
+  # signal that the transfer is starting
   if ($obj->can('connected')) { # we already have a socket
     my $self = $class->SUPER::new($obj,$obj,$eventloop);
     return unless $self;
@@ -30,6 +31,7 @@ sub new {
 
   if ($obj->isa('MP3::Napster::TransferRequest')) { # called with a transfer_request object
     my $transfer_request = $obj;
+    $transfer_request->start;
     my $peer = $transfer_request->peer;
     warn "connecting to $peer" if $eventloop->debug;
     my $sock = $class->connect($peer);  # try to connect
@@ -94,7 +96,7 @@ sub connect {
   $sock->blocking(0);
   my $addr = sockaddr_in($port,inet_aton($inet));
   my $result = $sock->connect($addr);
-  return $sock if $result || $!==EINPROGRESS;
+  return $sock if $result || $!{'EINPROGRESS'};
   return  # anything else is an error
 }
 
@@ -167,13 +169,13 @@ sub abort {
 ########### handle incoming data ###########
 
 # This will be called when there's data in the inbuffer to read
-# Only two states are possible.  All others are errors.
+# Only three states are possible.  All others are errors.
 sub incoming_data {
   my $self = shift;
   return $self->handle_garbage   if $self->status eq 'handshake1';
   return $self->handle_handshake if $self->status eq 'handshake2';
   return $self->handle_request   if $self->status eq 'request_in';
-  die "bad status: ",$self->status;
+#  die "bad status: ",$self->status;
 }
 
 
@@ -186,7 +188,6 @@ sub outgoing_data {
     $self->send_request;
   }
 }
-
 
 #############################################################
 # Active requests expect a handshake
@@ -264,14 +265,14 @@ sub handle_request {
 #############################################################
 sub initiate_transfer {
   my $self = shift;
-  my $size_or_offset = $self->size;
   my $transfer_request = $self->transfer_request;
+  my $size_or_offset = $self->size;
+  $transfer_request->set_size_or_offset($size_or_offset);
   $self->status('starting transfer');
   $self->adjust_io;
 
   ############## download requests #############
   if ($transfer_request->direction eq 'download') {
-    $transfer_request->size($size_or_offset);
     my $transfer =
       MP3::Napster::Transfer->new(in        => $self->infh,
 				  out       => $transfer_request->localfh,
@@ -287,7 +288,6 @@ sub initiate_transfer {
 
   ############## upload requests #############
   if ($transfer_request->direction eq 'upload') {
-    $transfer_request->offset($size_or_offset);
     my $transfer =
       MP3::Napster::Transfer->new(in        => $transfer_request->localfh,
 				  out       => $self->outfh,
@@ -301,4 +301,10 @@ sub initiate_transfer {
 
 }
 
+sub DESTROY {
+  my $self = shift;
+  warn "DESTROY $self" if $self->eventloop && $self->eventloop->debug;
+}
+
 1;
+

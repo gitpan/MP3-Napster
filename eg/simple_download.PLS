@@ -5,7 +5,7 @@ use Cwd;
 
 $origdir = cwd;
 chdir dirname($0);
-$file = basename($0, '.PL');
+$file = basename($0, '.PLS');
 $file .= $^O eq 'VMS' ? '.com' : '.pl';
 
 open OUT,">$file" or die "Can't create $file: $!";
@@ -19,6 +19,7 @@ $Config{startperl} -w
 # In the following, perl variables are not expanded during extraction.
 
 print OUT <<'!NO!SUBS!';
+use lib './blib/lib','../blib/lib';
 use MP3::Napster;
 use strict;
 
@@ -26,7 +27,7 @@ my $username = shift || die "Usage: $0 <nickname> <password>\n";
 my $password = shift || die "Usage: $0 <nickname> <password>\n";
 
 warn "Connecting...\n";
-my $nap = MP3::Napster->new;
+my $nap = MP3::Napster->new || die "Can't connect ",MP3::Napster->error;
 
 # log in as "username" "password" using a T1 line
 warn "Logging in...\n";

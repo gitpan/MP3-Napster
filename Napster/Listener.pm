@@ -4,14 +4,14 @@ package MP3::Napster::Listener;
 # This object listens for incoming connections.
 
 use strict;
-use Errno 'EWOULDBLOCK';
+use Errno qw(:POSIX);
 use IO::Socket;
 
 use MP3::Napster::PeerToPeer;
 use base 'MP3::Napster::IOEvent';
 use vars qw($VERSION);
 
-$VERSION = '0.03';
+$VERSION = '0.04';
 
 sub new {
   my $class          = shift;
@@ -39,8 +39,6 @@ sub make_listen_port {
   return IO::Socket::INET->new(@args);
 }
 
-
-
 sub port {
   my $self = shift;
   return 0 unless $self->infh;
@@ -66,7 +64,7 @@ sub in {
   return '0E0' unless $self->can_read();  # ???
   my $sock = $self->infh->accept;
   if (!$sock) {
-    return '0E0' if $! == EWOULDBLOCK;
+    return '0E0' if $!{EAGAIN};
     $self->eof(1);
   } else { # we have an incoming connection
     my $connected = MP3::Napster::PeerToPeer->new($sock,$self->eventloop);

@@ -10,6 +10,7 @@ sub new {
   return bless {
 		widget          => $widget,
 		periodic_event  => 0,
+		handles         => {},
 	       }
 }
 
@@ -17,26 +18,28 @@ sub set_io_flags {
   my $self = shift;
   my ($fh,$operation,$flag) = @_;
 
-  my ($op,$sub)  = $operation eq 'read' ? ('readable',\&doin)
-                                        : ('writable',\&doout);
-
-  unless ($flag) {
-    $self->{fileno($fh).$op} && $self->{widget}->fileevent($fh,$op => '');
-    undef $self->{$fh,$op};
+  my $op = $operation eq 'read' ? 'readable' : 'writable';
+  my $cb;
+  if ($flag) {
+    my $obj = MP3::Napster::IOEvent->lookup_fh($fh);
+    $cb = $operation eq 'read' ? [$obj=>'in'] : [ $obj=>'out' ];
+    $self->{handles}{fileno($fh)} = $fh;
   } else {
-    $self->{widget}->fileevent($fh,$op => [$sub,$fh]);
-    $self->{fileno($fh).$op}++;
+    $cb = '';
+    delete $self->{handles}{fileno($fh)};
   }
+
+  if (my $obj = tied *$fh) {
+    my $imode = Tk::Event::IO::imode($op);
+    $obj->handler($imode,$cb);
+  } else {
+    $self->{widget}->fileevent($fh,$op=>$cb);
+  }
+
 }
 
-sub doin {
-  my $obj = MP3::Napster::IOEvent->lookup_fh(shift) or return;
-  $obj->in;
-}
-
-sub doout {
-  my $obj = MP3::Napster::IOEvent->lookup_fh(shift) or return;
-  $obj->out;
+sub handles {
+  return values %{shift->{handles}};
 }
 
 sub periodic_event {
@@ -52,11 +55,43 @@ sub periodic_event {
   $id;
 }
 
+# these two subroutines are provided for API compatibility, but not
+# actually used, since Tk handles callbacks itself
+sub doin {
+  my $obj = MP3::Napster::IOEvent->lookup_fh(shift) or return;
+  $obj->in;
+}
+
+sub doout {
+  my $obj = MP3::Napster::IOEvent->lookup_fh(shift) or return;
+  $obj->out;
+}
+
 sub DESTROY {
   my $self = shift;
 }
 
-1;
+package Tk::Event::IO;
 
+no warnings 'redefine';
+
+sub BINMODE {
+  my $obj = $_[0];
+  binmode($obj->handle);
+}
+
+sub WRITE {
+ my $obj = $_[0];
+ return syswrite($obj->handle,$_[1],$_[2]);
+}
+
+sub READ
+{
+ my $obj = $_[0];
+ my $h = $obj->handle;
+ return sysread($h,$_[1],$_[2],defined $_[3] ? $_[3] : 0);
+}
+
+1;
 
 __END__

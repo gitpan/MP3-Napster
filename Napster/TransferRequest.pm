@@ -58,12 +58,13 @@ sub new {
 		    last_accessed   => time,
 		    interval        => INTERVAL,
 		    peer            => undef,
-		    status          => 'waiting for transfer',
+		    status          => 'queued',
 		    io_object       => undef,
 		   },$pack;
 
   $self->set_offset($file) if $file;
   $self->server->register_transfer($direction,$self=>1);
+  $self->server->process_event(TRANSFER_STARTED,$self);
   return $self;
 }
 
@@ -71,24 +72,27 @@ sub done {
   my $self = shift;
   return if $self->aborted;
   if (my $done = shift) {
-    $self->status('transfer complete');
-    $self->server->register_transfer($self->direction,$self => 0);
-    $self->server->process_event(TRANSFER_DONE,$self);
+    $self->_done('transfer complete');
   }
   $self->status eq 'transfer complete';
 }
 
 sub abort {
   my $self = shift;
-  $self->aborted(1) && return;
-  if ($self->io_object) {
-    $self->io_object->close('now');
-    $self->io_object(undef);  # break cycle!
-  }
-  $self->status('transfer aborted');
+  return if $self->aborted;
+  $self->aborted(1);
+  $self->_done('transfer aborted');
+}
+
+sub _done {
+  my $self = shift;
+  my $status = shift;
+  $self->status($status);
   $self->server->register_transfer($self->direction,$self => 0);
-  $self->server->process_event(TRANSFER_ABORTED,$self);
   $self->server->process_event(TRANSFER_DONE,$self);  # send the other one too/ backward compatbility
+  $self->server->send_command($self->direction eq 'download' ? DOWNLOAD_COMPLETE : UPLOAD_COMPLETE);
+  $self->io_object->close('now') if $self->io_object;
+  $self->io_object(undef);
 }
 
 sub title {
@@ -120,6 +124,14 @@ sub io_object {
   $self->{io_object} = shift if @_;
   $d;
 }
+
+sub server    {
+  my $self = shift;
+  my $d = $self->{server};
+  $self->{server} = shift if @_;
+  $d;
+}
+
 
 sub aborted {
   my $self = shift;
@@ -156,6 +168,16 @@ sub offset {
   $d;
 }
 
+sub set_size_or_offset {
+  my $self = shift;
+  my $size_or_offset = shift;
+  if ($self->direction eq 'download') {
+    $self->size($size_or_offset);
+  } else {
+    $self->offset($size_or_offset);
+  }
+}
+
 sub peer {
   my $self = shift;
   my $d = $self->{peer};
@@ -165,7 +187,6 @@ sub peer {
 
 sub direction { shift->{direction} }
 sub nickname  { shift->{nickname}  }
-sub server    { shift->{server}    }
 sub song      { shift->{song}      }
 
 sub localfh {
@@ -176,9 +197,11 @@ sub localfh {
                                             : O_WRONLY|O_CREAT|O_APPEND;
     $self->{fh} = IO::File->new($file,$mode);
     croak "Can't open file $self->{file}: $!" unless $self->{fh};
+    if ($self->offset) {
+      sysseek($self->{fh},$self->offset,0) or die "sysseek(): $!";
+      $self->{transferred} = $self->offset;
+    }
   }
-  sysseek($self->{fh},$self->offset,0) or die "sysseek(): $!" 
-    if $self->offset;
   $self->{fh};
 }
 
@@ -200,7 +223,6 @@ sub start {
   my $self = shift;
   # tell the server that we have begun up/downloading file
   $self->server->send_command($self->direction eq 'download' ? DOWNLOADING : UPLOADING);
-  $self->server->process_event(TRANSFER_STARTED,$self);
   $self->status('transfer in progress');
 }
 
@@ -260,10 +282,8 @@ sub asString {
 }
 
 sub DESTROY {
-  my $self = shift;
-  # tell the server that we have finished up/downloading file
-  $self->server->send_command($self->direction eq 'download' ? DOWNLOAD_COMPLETE : UPLOAD_COMPLETE)
-    if $self->server;
+   my $self = shift;
+   warn "DESTROY $self" if $self->server && $self->server->debug;
 }
 
 1;

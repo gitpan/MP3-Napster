@@ -30,7 +30,8 @@ my %SHARENAMES;
 
 # Advanced tests of functionality.  Requires the miniserver.pl script to be running.
 my $miniserver = "$Bin/../eg/miniserver.pl";
-open(SERVER,"$miniserver -1 2>./miniserver.log |") || die "Can't start miniserver for testing";
+open(SERVER,"perl $miniserver -1 2>./miniserver.log |") 
+	  || die "Can't start miniserver for testing";
 
 my $line = <SERVER>;
 my ($server_pid,$socket) = $line =~ /process=(\d+).+port=(\d+)/

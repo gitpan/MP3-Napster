@@ -5,7 +5,7 @@ use Cwd;
 
 $origdir = cwd;
 chdir dirname($0);
-$file = basename($0, '.PL');
+$file = basename($0, '.PLS');
 $file .= $^O eq 'VMS' ? '.com' : '.pl';
 
 open OUT,">$file" or die "Can't create $file: $!";
@@ -94,7 +94,6 @@ END {
 mkdir $OPT{d},0777 or die "Couldn't make directory $OPT{d}: $!\n"
   unless -d $OPT{d};
 $nap->download_dir($OPT{d});
-
 setup_callbacks($nap);
 
 login()    || die "\n"   unless $OPT{r};
@@ -106,12 +105,7 @@ $nap->change_registration(link => $OPT{l}) if $OPT{l};
 
 # Share some files
 my $shared_songs = 0;
-opendir (S,$OPT{u}) || die "Couldn't open upload directory: $!";
-while (my $song = readdir(S)) {
-  next unless $song =~ /\.mp3$/;
-  $nap->share("$OPT{u}/$song",1) && $shared_songs++;
-}
-closedir S;
+$shared_songs += $nap->share_dir($OPT{u}) if $OPT{u};
 
 $nap->allow_setport(1);
 my $port = $nap->port;
@@ -119,7 +113,6 @@ print "[ sharing $shared_songs songs ",$port?"on port $port":"(firewalled)"," ]\
 
 print "\n";
 
-$nap->command_processor(\&commands);
 $nap->run;
 print "Connection closed by server.\n";
 exit 0;
@@ -127,6 +120,7 @@ exit 0;
 sub commands {
   shift;      # get rid of server object
   $_ = shift; # read command
+  exit 0 unless defined $_;
   if (m!^/!) { # a command
     my ($command,$args) = m!^/(\w+)\s*(.*)!;
     $command = lc $command;
@@ -149,7 +143,7 @@ sub commands {
     password($args),return        if $command eq 'password';
     email($args),return           if $command eq 'email';
     exit(0)                       if $command eq 'quit';
-    help();
+    help(),return;
   }
   speak($_) if /\S/;
   help() unless /\S/;
@@ -439,13 +433,7 @@ END
 sub setup_callbacks {
   my $nap = shift;
 
-  my $s = sub {
-    my($server,$ec,$message) = @_;
-    my $event = $server->event;
-    warn "$event: $message\n";
-  };
-
-#  $nap->callback($_,$s) for (0..900);
+  $nap->command_processor(\&commands);
 
   my $user_speaks = sub {
     my ($nap,$ec,$message) = @_;
@@ -545,6 +533,18 @@ sub setup_callbacks {
   $nap->callback(PONG,                sub { print "* Got a PONG from $_[2]\n"; } );
   $nap->callback(SET_DATA_PORT,       sub { print "* Changing data port to $_[2]\n"; } );
   $nap->callback(DATA_PORT_ERROR,     sub { print "* Server: data port is misconfigured\n"; } );
+
+  my $s = sub {
+    my($server,$ec,$message) = @_;
+    my $event = $server->event;
+    warn "$event: $message\n";
+  };
+
+  if ($OPT{v}) {
+    $nap->callback($_,$s) for (0..900,2000..2007,9999);
+  }
+
+
 }
 __END__
 !NO!SUBS!
@@ -552,3 +552,4 @@ close OUT or die "Can't close $file: $!";
 chmod 0755, $file or die "Can't reset permissions for $file: $!\n";
 exec("$Config{'eunicefix'} $file") if $Config{'eunicefix'} ne ':';
 chdir $origdir;
+

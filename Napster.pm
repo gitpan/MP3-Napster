@@ -2,8 +2,6 @@ package MP3::Napster;
 
 use strict;
 require 5.6.0;  # for IO::Socket fixes
-use vars qw($VERSION %FIELDS %RDONLY $LAST_ERROR);
-use base qw(MP3::Napster::IOLoop MP3::Napster::Base);
 use Carp 'croak';
 
 use MP3::Napster::MessageCodes;
@@ -15,9 +13,13 @@ use MP3::Napster::Registry;
 use MP3::Napster::Listener;
 use MP3::Napster::PeerToPeer;
 use MP3::Napster::TransferRequest;
+use Symbol 'gensym';
 use Exporter;
 
-$VERSION = '2.01';
+use vars qw($VERSION %FIELDS %RDONLY $LAST_ERROR);
+use base qw(MP3::Napster::IOLoop MP3::Napster::Base);
+
+$VERSION = '2.03';
 
 %FIELDS = map {$_=>undef} qw(nickname email server channel registry 
 			     listener download_dir transfer_timeout attributes
@@ -37,7 +39,6 @@ my %ERRORS = (
 	      ALREADY_REGISTERED,  1,
 	      INVALID_NICKNAME,    1,
 	      INVALID_ENTITY,      1,
-	      USER_OFFLINE,        1,
 	     );
 
 my %MESSAGE_CONSTRUCTOR = (
@@ -126,10 +127,20 @@ sub port {
 sub install_default_callbacks {
   my $self = shift;
 
+  # miscellaneous errors
+  foreach (keys %ERRORS) {
+    $self->callback($_,sub {
+		      my $self = shift;
+		      my ($code,$msg) = @_;
+		      $self->error($msg);
+		    }
+		   );
+  }
+
   # successful login
   $self->callback(LOGIN_ACK, sub {
 		    my $self  = shift;
-		    my $email = shift;
+		    my ($code,$email) = @_;
 		    $self->email($email);
 		    $self->send_command(CHANGE_DATA_PORT,$self->port) if $self->port > 0;
 		  });
@@ -190,6 +201,7 @@ sub install_default_callbacks {
 										   $song,
 										   $song->path))) {
 			  $u->status('queued');
+			  $u->start;
 			}
 			$self->send_command(UPLOAD_ACK,$msg)
 		      });
@@ -225,18 +237,70 @@ sub install_default_callbacks {
 		  }
 		 );
 
-  # This is a type of delayed error that occurs when we've started
-  # a download, but the remote user goes offline
-  $self->callback(USER_OFFLINE,
-		  sub { my $self = shift;
-			my ($code,$msg) = @_;
-			my ($nick,$sharename) = $msg =~ /^(\S+) "([^\"]+)"/;
-			if (my $download = $self->downloads($nick,$sharename)) {
-			  $download->status('user offline');
-			  $download->abort;
-			}
-		      }
+  # This occurs when a download request is acknowledged.  We create a request
+  # and install the PeerToPeer object
+  $self->callback(DOWNLOAD_ACK,
+		  sub {
+		    my $self = shift;
+		    my ($code,$message) = @_;
+	
+		    # The server claims that we can download now.  The message contains the
+		    # IP address and port to fetch the file from.
+		    my ($nick,$ip,$port,$filename,$md5,$linespeed) = 
+		      $message =~ /^(\S+) (\d+) (\d+) "([^\"]+)" (\S+) (\d+)/;
+
+		    warn "download message = $message\n" if $self->debug > 0;
+
+		    my $request = $self->{pending}{$nick}{$filename};
+		    return $self->process_event(ERROR,"invalid request")
+		       unless $request;
+
+		    # delete extra reference to transfer request
+		    delete $self->{pending}{$nick}{$filename};
+
+		    if ($port == 0) { # they're behind a firewall!
+		      warn "initiating passive download\n" if $self->debug > 0;
+
+		      # we must have a listen thread going in this case
+		      return $self->process_event(ERROR,"can't download; both clients are behind firewalls")
+			 unless $self->port > 0;
+
+		      my ($rc,$msg) = $self->send_command(PASSIVE_DOWNLOAD_REQ,qq($nick "$filename"));
+
+		      # the actual transfer will be initiated by the Listen object
+		      $self->process_event(TRANSFER_QUEUED,$request);
+		    }
+
+		    # turn the IP address into standard dotted quad notation
+		    my $addr =  join '.',unpack("C4",(pack "V",$ip));
+		    $request->peer("$addr:$port");  # remember the peer in the request
+
+		    # create a new PeerToPeer object
+		    return $self->process_event(ERROR,"can't create PeerToPeer")
+		      unless MP3::Napster::PeerToPeer->new($request,$self);
+		  }
 		 );
+
+  $self->callback(GET_ERROR,sub {
+		    my $self = shift;
+		    my ($code,$msg) = @_;
+		    my ($nick,$filename) = $msg =~ /^(\S+) (.+)/;
+		    return unless my $request = $self->{pending}{$nick}{$filename};
+		    $self->register_transfer('download',$request=>0);
+		    delete $self->{pending}{$nick}{$filename};
+		    $self->process_event(ERROR,"get of $nick $filename forbidden");
+		  });
+
+  $self->callback(QUEUE_LIMIT,sub {
+		    my $self = shift;
+		    my ($code,$msg) = @_;
+		    my ($nick,$filename,$filesize,$limit) = $msg =~ /^(\S+) "([^\"]+)" (\d+) (\d+)/;
+		    return unless my $request =  $self->downloads($nick,$filename);
+		    $request->abort;
+		    delete $self->{pending}{$nick}{$filename};
+		    $self->error("$nick limits you to $limit simultaneous downloads");
+		  });
+
 }
 
 sub event  {
@@ -261,7 +325,8 @@ sub error {
 
 sub send_command {
   my $self = shift;
-  $self->server->send_command(@_);
+  my $server = $self->server or return;
+  $server->send_command(@_);
 }
 
 # get event as a number
@@ -275,7 +340,7 @@ sub wait_for {
   my ($event,$timeout) = @_;
   return unless $self->pollobject->can('poll');
   my $events = ref($event) eq 'ARRAY' ? $event : [$event];
-  my ($ec,@msg) = $self->run_until($events,$timeout) 
+  my ($ec,@msg) = $self->run_until($events,$timeout)
     or return $self->error("timeout while waiting for ",$MESSAGES{$events->[0]});
   return wantarray ? ($ec,@msg) : $ec;
 }
@@ -369,7 +434,7 @@ sub register {
   $self->nickname($nickname);
   my ($ec,$msg) = $self->send_and_wait(REGISTRATION_REQUEST,$nickname,
 				       [LOGIN_ACK,ALREADY_REGISTERED,INVALID_NICKNAME],20);
-  return unless $ec == LOGIN_ACK;
+  return unless defined($ec) && $ec == LOGIN_ACK;
   $self->port($att->{port}) if defined($att->{port});
   $self->new_info;
   $msg;
@@ -495,7 +560,7 @@ sub ping {
   return $self->ping_multi($user,$timeout) if ref $user eq 'ARRAY';
   warn "ping(): waiting for a PONG from $user (timeout $timeout)\n" if $self->debug > 0;
   return unless my ($ec,@message) = 
-    $self->send_and_wait(PING,$user,[PONG,INVALID_ENTITY,USER_OFFLINE],$timeout || 5);
+    $self->send_and_wait(PING,$user,[PONG,INVALID_ENTITY],$timeout || 5);
   return unless $ec == PONG;
   return grep {lc($user) eq lc($_)} @message;
 }
@@ -510,7 +575,7 @@ sub ping_multi {
   # keep track of the pongs we receive
   my %pongs;
   my $pending = @$users;
-  my @events = (PONG,INVALID_ENTITY,USER_OFFLINE);
+  my @events = (PONG,INVALID_ENTITY);
   my $start = time;
 
   my $cb = sub {
@@ -605,7 +670,7 @@ sub search {
   $query .= qq(BITRATE $attrs{bitrate} ) if $attrs{bitrate};
   $query .= qq(FREQ $attrs{frequency} ) if $attrs{frequency};
 #  $query .= qq(LOCAL_ONLY);
-  warn "search query = $query" if $self->debug > 0;
+  warn "search query = $query" if $self->debug;
 
   my $ec = $self->send_command(SEARCH,$query);
   my $timeout = $attrs{timeout} || 20;
@@ -622,7 +687,7 @@ sub browse {
   return
     unless my ($ec,$msg) = 
       $self->send_and_wait(BROWSE_REQUEST,$nick,
-			   [BROWSE_RESPONSE_END,USER_OFFLINE,INVALID_ENTITY],30);
+			   [BROWSE_RESPONSE_END,INVALID_ENTITY],30);
   return $self->error('user not online') unless $ec == BROWSE_RESPONSE_END;
   return $self->events(BROWSE_RESPONSE);
 }
@@ -645,13 +710,20 @@ sub share_dir {
   my $self = shift;
   my ($dir,$cache) = @_;
   $cache = 1 unless defined $cache;
-  opendir (S,$dir) or return $self->error("Couldn't open directory $dir: $!");
+  my $s = gensym;
+  opendir ($s,$dir) or return $self->error("Couldn't open directory $dir: $!");
   my @share;
-  while (my $song = readdir(S)) {
-    next unless $song =~ /\.mp3$/;
-    my $s = $self->share("$dir/$song",$cache);
-    push @share,$s if $s;
+  while (my $entry = readdir($s)) {
+    next if $entry =~ /^\./;  # ignore dot files
+    if (-d "$dir/$entry") {  # if a directory, call us recursively
+      push @share,$self->share_dir("$dir/$entry",$cache);
+    } else {
+      next unless $entry =~ /\.mp3$/;
+      my $s = $self->share("$dir/$entry",$cache);
+      push @share,$s if $s;
+    }
   }
+  closedir $s;
   @share;
 }
 
@@ -663,55 +735,44 @@ sub share_dir {
 # to save the data to.
 sub download {
   my $self = shift;
-  my ($song,$fh) = @_;
+  my ($song,$fh,$timeout) = @_;
   my ($ec,$message);
 
-  die "usage: download(\$song,\$file_or_filehandle)"
-    unless ref $song and defined $fh;
+  $timeout = 15 unless defined $timeout;
+
+  die "usage: download(\$song [,\$file_or_filehandle])" unless ref $song;
 
   my ($nickname,$path) = ($song->owner,$song->path);
   return $self->error("can't download from yourself") if $self->nickname eq $nickname;
 
   $message = qq($nickname "$path");
 
-  #timeout of 15 secs to get an ack
-  return
-    unless ($ec,$message) = $self->send_and_wait(DOWNLOAD_REQ,
-						 $message,
-						 [DOWNLOAD_ACK,GET_ERROR,
-						  ERROR,USER_OFFLINE],15);
-  return $self->error($self->event) unless $ec == DOWNLOAD_ACK;
-
-  # The server claims that we can download now.  The message contains the
-  # IP address and port to fetch the file from.
-  my ($nick,$ip,$port,$filename,$md5,$linespeed) = 
-    $message =~ /^(\S+) (\d+) (\d+) "([^\"]+)" (\S+) (\d+)/;
-
-  warn "download message = $message\n" if $self->debug > 0;
-
-  # turn nickname into an object
-  $nick = MP3::Napster::User->new($self,$nick,$linespeed);
+  # create a default filename if none provided
+  $fh ||= $self->download_dir . '/' . quotemeta($song);
 
   # create request object
-  my $request = MP3::Napster::TransferRequest->new_download($self,$nick,$song,$fh);
+  my $request = MP3::Napster::TransferRequest->new_download($self,$nickname,$song,$fh);
 
-  if ($port == 0) { # they're behind a firewall!
-    warn "initiating passive download\n" if $self->debug > 0;
-    # we must have a listen thread going in this case
-    return $self->error("can't download; both clients are behind firewalls")
-	    unless $self->port > 0;
-    my ($rc,$msg) = $self->send_command(PASSIVE_DOWNLOAD_REQ,qq($nick "$filename"));
-    # the actual transfer will be initiated by the Listen object
-    return $request;
+  # remember the request temporarily
+  $self->{pending}{$nickname}{$path} = $request;
+
+  #timeout of 15 secs to get an ack
+  unless (($ec,$message) = $self->send_and_wait(DOWNLOAD_REQ,
+						$message,
+						[TRANSFER_STATUS,
+						 TRANSFER_DONE,
+						 GET_ERROR,
+						 QUEUE_LIMIT,
+						 ERROR],$timeout)) {
+    # handle timeouts by cleaning up
+    return unless $self->pollobject->can('poll');
+    if (my $r = $self->{pending}{$nickname}{$path}) {
+      $self->register_transfer('download',$r=>0);
+      delete $self->{pending}{$nickname}{$path};
+    }
   }
 
-  # turn the IP address into standard dotted quad notation
-  my $addr =  join '.',unpack("C4",(pack "V",$ip));
-  $request->peer("$addr:$port");  # remember the peer in the request
-
-  # create a new PeerToPeer object
-  return unless MP3::Napster::PeerToPeer->new($request,$self);
-  return $request;
+  return $self->downloads($nickname,$path);
 }
 
 # wait until all downloads are finished
@@ -726,7 +787,7 @@ sub register_transfer {
   my $self = shift;
   my ($type,$request,$register_flag) = @_;
 
-  warn "register_transfer($type,$request,$register_flag)" if $self->debug > 0;
+  warn "register_transfer($type,$request,$register_flag)" if $self->debug;
   my $path = $request->song;
   my ($title) = $path =~ m!([^/\\]+)$!;
 
@@ -782,7 +843,7 @@ sub _transfers {
 
 sub DESTROY {
   my $self = shift;
-  warn "$self->DESTROY" if $self->debug > 2;
+  warn "$self->DESTROY" if $self->debug;
 }
 
 

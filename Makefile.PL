@@ -12,16 +12,16 @@ WriteMakefile(
 	      AUTHOR       => 'Lincoln Stein <lstein@cshl.org>',
 	      ABSTRACT     => 'Pure Perl module for interacting with Napster MP3 servers',
 	      ABSTRACT_FROM => 'Napster.pm',
-	      PMLIBDIRS    => ['Napster','lib'],
+	      PMLIBDIRS    => ['Napster','TkNapster'],
 	      PREREQ_PM    => { Digest::MD5   => 0,            # needed for uploading files
 				MP3::Info     => 0,
 			      },
 	      VERSION_FROM => 'Napster.pm',     # finds $VERSION
 	      PL_FILES     => {
-			       'eg/miniserver.PL'      => 'eg/miniserver.pl',
-			       'eg/simple_download.PL' => 'eg/simple_download.pl',
-			       'napster.PL'            => 'napster.pl',
-			       'tknapster.PL'          => 'tknapster.pl',
+			       'eg/miniserver.PLS'      => 'eg/miniserver.pl',
+			       'eg/simple_download.PLS' => 'eg/simple_download.pl',
+			       'napster.PLS'            => 'napster.pl',
+			       'tknapster.PLS'          => 'tknapster.pl',
 			      },
 	      EXE_FILES    => ['napster.pl','tknapster.pl'],
 	      DISTNAME     => 'MP3-Napster',

@@ -114,7 +114,7 @@ sub nice_time {
   $time /= 7;
   return sprintf "%2.1f wk",$time;
 }
-sub ping   { 
+sub ping   {
   my $self = shift;
   $self->server->ping($self->name,@_);
 }

@@ -7,8 +7,8 @@ use Carp 'croak';
 use IO::Socket;
 use MP3::Napster::MessageCodes 'TIMEOUT','DISCONNECTED';
 
-use constant CLEANUP_INTERVAL => 60;
-$VERSION = 1.00;
+use constant CLEANUP_INTERVAL => 30;  # run garbage collection twice per minute
+$VERSION = 1.01;
 my $DEBUG_LEVEL = 0;
 
 sub new {
@@ -18,7 +18,7 @@ sub new {
 		callbacks   => {},
 		events      => {},  # events to record
 		halt_events => {},  # events to halt on
-		pollobject  => $pollobject || new PollObject,
+		pollobject  => $pollobject || PollObject->new(),
 		ec          => undef,
 		message     => undef,
 		done        => 0,
@@ -66,14 +66,16 @@ sub done {
 
 sub set_event {
   my $self = shift;
-  $self->{ec}      = shift if @_ >= 1;
-  $self->{message} = shift if @_ >= 1;
+  if (@_) {
+    $self->{ec}      = shift;
+    $self->{message} = shift;
+  }
   return $self->{ec};
 }
 
 # pass through to pollobject
 sub set_io_flags {
-  shift->{pollobject}->set_io_flags(@_); 
+  shift->{pollobject}->set_io_flags(@_);
 }
 
 sub add_event{
@@ -95,8 +97,7 @@ sub events {
 sub run_until {
   my $self = shift;
   my ($events,$timeout) = @_;
-
-  my $server = $self->server;
+  $events = [$events] unless ref($events) eq 'ARRAY';
 
   # this will record events
   $self->{events}      = {};
@@ -134,7 +135,7 @@ sub run {
 
   $self->{halt_events}{DISCONNECTED}++;
 
-  while (!$self->done) {
+  while ($poll->handles && !$self->done) {
     warn "\npolling...\n" if $self->debug > 2;
 
     # Did one of the expected events occur?
@@ -156,7 +157,8 @@ sub run {
     }
 
     # Call select() now!!!!
-    my ($readers,$writers) = $poll->poll($pause);
+    my ($readers,$writers) = $poll->poll($pause) 
+      or croak "select(): $! -- are you on a Win32 platform?\n";
 
     # Is it time to run an intermittent task?
     $time_to_task -= (time-$now);
@@ -212,6 +214,17 @@ sub callback {
   }
   die "usage: callback(EVENT,\$CODEREF)" unless ref $sub eq 'CODE';
   unshift @{$self->{callbacks}{$event}},$sub;
+}
+
+sub append_callback {
+  my $self = shift;
+  my ($event,$sub) = @_;
+  unless (defined $sub) {
+    return unless $self->{callbacks}{$event};
+    return @{$self->{callbacks}{$event}};
+  }
+  die "usage: append_callback(EVENT,\$CODEREF)" unless ref $sub eq 'CODE';
+  push @{$self->{callbacks}{$event}},$sub;
 }
 
 # clear a particular callback or all callbacks
@@ -299,6 +312,7 @@ sub set_io_flags {
   } else {
     $select->remove($fh);
   }
+
 }
 
 sub poll {
@@ -307,8 +321,13 @@ sub poll {
   IO::Select->select($self->{pollin},$self->{pollout},undef,$timeout);
 }
 
+sub handles {
+  my $self = shift;
+  my @h = ($self->{pollin}->handles,$self->{pollout}->handles);
+  return @h;
+}
+
 
 1;
-
 
 __END__

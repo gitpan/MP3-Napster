@@ -5,7 +5,7 @@ use Cwd;
 
 $origdir = cwd;
 chdir dirname($0);
-$file = basename($0, '.PL');
+$file = basename($0, '.PLS');
 $file .= $^O eq 'VMS' ? '.com' : '.pl';
 
 open OUT,">$file" or die "Can't create $file: $!";
@@ -33,6 +33,11 @@ my $PORT = shift || 9999;
 use constant ERROR => 0;
 use constant LOGIN => 2;
 use constant LOGIN_ACK => 3;
+use constant NEW_LOGIN  => 6;
+use constant REGISTER  => 7;
+use constant NICKNAME_OK => 8;
+use constant ALREADY_REGISTERED => 9;
+use constant BAD_NICKNAME => 10;
 use constant PERMISSION_DENIED => 11;
 use constant LOGIN_ERROR => 13;
 use constant I_HAVE => 100;
@@ -137,16 +142,17 @@ while (1) {
       $in->add($newsock);
       next;
     } else {
+      my $ok = 0;
       my $bytes = sysread($r,$IN{$r},2048,length $IN{$r});
       if ($bytes > 0) {
-	dispatch($r,$IN{$r});
+	$ok = dispatch($r,$IN{$r});
       } elsif (!defined($bytes) && $! == EWOULDBLOCK) {
 	next;
-      } else { # error or eof occurred
+      }
+      unless ($ok) {
 	warn $r->peerhost,": $!";
 	$in->remove($r);
 	clean_up($r);
-	next;
       }
     }
   }
@@ -205,7 +211,8 @@ sub do_event {
   my ($sock,$type,$data) = @_;
   warn "processing $type message from ",$sock->peerhost,"\n";
 
-  return login($sock,$data)          if $type == LOGIN;
+  return login($sock,$data)          if $type == LOGIN or $type == NEW_LOGIN;
+  return register($sock,$data)       if $type == REGISTER;
   return whois($sock,$data)          if $type == WHOIS_REQ;
   return share_song($sock,$data)     if $type == I_HAVE;
   return unshare_song($sock,$data)   if $type == REMOVE;
@@ -267,10 +274,22 @@ sub user_index {
   $USER_INDEX{$nickname}{$path} = join $;,$nickname,$path;
 }
 
+sub register {
+  my ($sock,$nick) = @_;
+  if (registration($nick)) {
+      msg($sock,ALREADY_REGISTERED);
+  } elsif ($nick=~/\s/) {
+      msg($sock,BAD_NICKNAME);
+  } else {
+      msg($sock,NICKNAME_OK);
+  }
+  1;
+}
+
 sub login {
   my ($sock,$data) = @_;
-  my ($nickname,$password,$p,$version,$link_type) = 
-    $data =~ /^(\S+) (\S+) (\d+) "([^\"]+)" (\d+)$/;
+  my ($nickname,$password,$p,$version,$link_type,$email) = 
+    $data =~ /^(\S+) (\S+) (\d+) "([^\"]+)" (\d+) ?(.*)$/;
 
   my ($port,$addr) = sockaddr_in(getpeername $sock);
 
@@ -299,7 +318,6 @@ sub login {
 		 channels  => {},
 	       }
 	      );
-  lock %USER_INDEX;
   $USER_INDEX{$nickname} = {};
   msg($sock,LOGIN_ACK,'anon@napster.com');
 
@@ -388,15 +406,12 @@ sub unshare_song {
   my ($sock,$path) = @_;
   return 1 unless my $nickname = nickname($sock);
 
-  lock $USER_INDEX{$nickname};
   return 1 unless my $shared = $USER_INDEX{$nickname}{$path};
   delete $USER_INDEX{$nickname}{$path};
-  lock %SHARED;
   my $song_data = $SHARED{$nickname,$path};
   delete $SHARED{$nickname,$path};
 
   my ($md5) = $song_data =~ /^.+\" (\S+)/;
-  lock $MD5_INDEX{$md5};
   delete $MD5_INDEX{$md5}{$nickname,$path};
   return 1;
 }
@@ -406,10 +421,6 @@ sub unshare_all {
 
   return unless $USER_INDEX{$nickname};
 
-  lock %USER_INDEX;
-  lock %SHARED;
-  lock %MD5_INDEX;
-  
   foreach my $path (keys %{$USER_INDEX{$nickname}}) {
     my $song_data = $SHARED{$nickname,$path};
     my ($md5) = $song_data =~ /^.+\" (\S+)/;
@@ -424,7 +435,6 @@ sub browse {
 
   return msg($sock,USER_OFFLINE,$nickname) unless registration($nickname);
 
-  lock $USER_INDEX{$nickname};
   my @shared = values %{$USER_INDEX{$nickname}};
   for my $key (@shared) {
     next unless my $data = $SHARED{$key};
@@ -558,26 +568,19 @@ sub join_channel {
   my $r    = registration($nick) || return 1;
   return msg($sock,INVALID_ENTITY,$channel) unless $CHANNELS{$channel};
   my $sharing     = keys %{$USER_INDEX{$nick}};
-
-  {
-    lock %CHANNEL_USERS;
-    $CHANNEL_USERS{$channel} ||= {};
-  }
+  $CHANNEL_USERS{$channel} ||= {};
 
   broadcast($channel,USER_JOINS,"$channel $nick $sharing $r->{link_type}");
-  # get list of users
-  my @users = keys %{$CHANNEL_USERS{$channel}};
 
   # add the user
-  {
-    lock $CHANNEL_USERS{$channel};
-    lock $r->{channels};
-    $CHANNEL_USERS{$channel}{$nick}++;
-    $r->{channels}{$channel}++;
-  }
+  $CHANNEL_USERS{$channel}{$nick}++;
+  $r->{channels}{$channel}++;
 
   # acknowledge the join
   msg($sock,JOIN_ACK,$channel);
+
+  # get list of users
+  my @users = keys %{$CHANNEL_USERS{$channel}};
 
   # send a series of user entries
   for my $user (@users) {
@@ -593,13 +596,14 @@ sub part_channel {
   my ($sock,$channel) = @_;
   my $nickname = nickname($sock);
   return 1 unless my $r = registration($nickname);
-  {
-    lock $r;
-    return 1 unless $r->{channels}{$channel};
-    delete $r->{channels}{$channel};
-    lock $CHANNEL_USERS{$channel};
-    delete $CHANNEL_USERS{$channel}{$nickname};
-  }
+  return 1 unless $r->{channels}{$channel};
+  delete $r->{channels}{$channel};
+  delete $CHANNEL_USERS{$channel}{$nickname};
+
+  # acknowledge the part
+  msg($sock,PART_CHANNEL,$channel);
+
+  # broadcast
   my $sharing     = keys %{$USER_INDEX{$nickname}};
   broadcast($channel,USER_DEPARTS,"$channel $nickname $sharing $r->{link_type}");
   1;

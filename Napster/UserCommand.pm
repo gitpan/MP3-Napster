@@ -1,6 +1,6 @@
 package MP3::Napster::UserCommand;
 # file: MP3/Napster/UserCommand.pm
-# silly test class
+# callbacks for interactive commands, usually on STDIN
 # $Id: UserCommand.pm,v 1.1 2000/11/10 20:53:09 lstein Exp $
 
 use strict;
@@ -62,7 +62,7 @@ __END__
 
 =head1 NAME
 
-MP3::Napster::Echo
+MP3::Napster::UserCommand
 
 =head1 SYNOPSIS
 

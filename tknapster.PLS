@@ -5,7 +5,7 @@ use Cwd;
 
 $origdir = cwd;
 chdir dirname($0);
-$file = basename($0, '.PL');
+$file = basename($0, '.PLS');
 $file .= $^O eq 'VMS' ? '.com' : '.pl';
 
 open OUT,">$file" or die "Can't create $file: $!";
@@ -26,25 +26,21 @@ use Tk::widgets qw/ROText HList Dialog DialogBox LabEntry LabFrame Adjuster/;
 use lib './blib/lib';
 use MP3::Napster;
 use MP3::Napster::MessageCodes;
-
-use constant DEFAULT_SPEED => LINK_56K;
-use constant FIND_ICON     => '/usr/X11R6/include/X11/pixmaps/app_find.xpm';
+use MP3::TkNapster::Globals;
+use MP3::TkNapster::Users;
 
 use constant BACKGROUND   => 'black';
 use constant FOREGROUND   => 'yellow';
 use constant BACKGROUND2  => 'gray';
 use constant FOREGROUND2  => 'black';
 
-my ($nap,
-    $server,$nickname,$password,$newuser,$user_linkspeed,$userport,$linklabel,
+my ($login,
     $channel_menu,$channel_name,$current_channel,$current_channels,
-    $status,$stats,$info_dialog,$ping_dialog,$login_dialog,
-    $songwindow,$search,$searchstatus,$searchfound,$songtext,
-    $USER,%USERS,%SERVERS,
-    %SONGS,$comparison,$c_direction,
-    %CHANNELS,%JOINED_CHANNELS);
+    $info_dialog,$ping_dialog,$alert_dialog,
+    %SERVERS,%CHANNELS,%JOINED_CHANNELS,%MEMBERS);
 
-my $main = MainWindow->new(-background=>BACKGROUND);
+# main is global
+$main = MainWindow->new(-background=>BACKGROUND);
 
 ###################################
 # create menus
@@ -64,15 +60,29 @@ $file_menu->command(-label=>'Lo~gout',
 $file_menu->separator;
 $file_menu->command(-label=>'~Quit', -command=>[\&exit]);
 
-my $search_menu = $menubar->cascade(-label=>'Search',
+my $edit_menu = $menubar->cascade(-label=>'Edit',
+				  -underline=>0,
+				  -tearoff=>0,
+				  -state=>'normal',
+				  -menuitems=> [
+						[command    => 'Cut'],
+						[command    => 'Copy'],
+						[command    => 'Clear'],
+					       ]);
+
+my $search_menu = $menubar->cascade(-label=>'Songs',
 				    -underline=>0,
 				    -tearoff=>0,
 				    -state=>'disabled',
 				    -menuitems=> [
-						  [command    => 'Search for Songs'],
+						  [command    => 'Search...'],
+						  [command    => 'Shared Files...'],
 						 ]);
-$search_menu->cget(-menu)->entryconfigure('Search for Songs',
+$search_menu->cget(-menu)->entryconfigure('Search...',
 					  -command => sub { add_song() }
+					 );
+$search_menu->cget(-menu)->entryconfigure('Shared Files...',
+					  -command => sub { shared_files() }
 					 );
 
 my $help = $menubar->cascade(-label=>'Help',
@@ -92,13 +102,15 @@ $help->cget(-menu)->entryconfigure('About',
 				  );
 
 # popup menu for users
-my $user_popup = $main->Menu(-type=>'normal',-tearoff=>0);
-$user_popup->command(-label=>'Info',-command=>\&info_user);
-$user_popup->command(-label=>'Browse Files',-command=>\&browse_user);
-$user_popup->command(-label=>'Ping',-command=>\&ping_user);
-$user_popup->command(-label=>'Whisper',-command=>\&whisper_user);
+$user_popup = $main->Menu(-type=>'normal',-tearoff=>0);
+$user_popup->command(-label=>'Info',-command=>sub {$users->info_user});
+$user_popup->command(-label=>'Browse Files',-command=>sub {$users->browse_user});
+$user_popup->command(-label=>'Ping',-command=>sub { $users->ping_user});
+$user_popup->command(-label=>'Whisper',-command=>sub {$users->whisper_user});
 
-# option menu for current channel
+###################################
+# configure main window
+###################################
 
 # create the console window and the text
 my $italic = $main->fontCreate(-family=>'Helvetica',-slant=>'italic');
@@ -142,6 +154,7 @@ my $text = $frame2->Scrolled('ROText',
 			     -background=>BACKGROUND,
 			     -foreground=>FOREGROUND,
 			     -highlightcolor=>'blue')->pack(-fill=>'both',-side=>'left',-expand=>1);
+
 #my $adjuster = $frame2->Adjuster(-widget=>$text,-foreground=>'yellow',-side=>'left')->pack(-side=>'left','fill'=>'y');
 my $user_list = $frame2->Scrolled('Listbox',
 				  -background=>'white',
@@ -153,15 +166,15 @@ my $user_list = $frame2->Scrolled('Listbox',
 $user_list->bind('<Button-3>',[ sub {
 				  my $w = shift;
 				  my $menu = shift;
-				  $USER = $w->get($Tk::event->xy);
+				  $users->current($w->get($Tk::event->xy));
 				  $menu->Post(@_);
 				},
 				$user_popup,
 				Ev('X'),Ev('Y')
 			      ]);
 
-$user_list->bind('<Button-1>',[sub {$USER = shift->get($Tk::event->xy)}]);
-$user_list->bind('<Double-Button-1>',\&info_user);
+$user_list->bind('<Button-1>',[sub {$users->current(shift->get($Tk::event->xy))}]);
+$user_list->bind('<Double-Button-1>',sub { $users->info_user });
 
 $text->tag(configure=>'nickname',-underline=>1,-foreground=>'sienna');
 $text->tag(configure=>'channel',-foreground=>'yellow');
@@ -183,18 +196,18 @@ $text->tag(bind=>'nickname','<Button-1>',
 	   sub { my $t = shift;
 		 my $xy = $Tk::event->xy;
 		 my ($start,$end) = $t->tagNextrange('nickname',"$xy linestart","$xy lineend");
-		 $USER = $t->get($start,$end),
+		 $users->current($t->get($start,$end));
 	       }
 	  );
-$text->tag(bind=>'nickname','<Double-Button-1>',\&info_user);
+$text->tag(bind=>'nickname','<Double-Button-1>',sub { $users->info_user } );
 
 $text->tag(bind=>'nickname','<3>',
 	   [sub {
 	      my ($t,$menu) = (shift,shift);
 	      my $xy = $Tk::event->xy;
 	      my ($start,$end) = $t->tagNextrange('nickname',"$xy linestart","$xy lineend");
-	      $USER = $t->get($start,$end),
-	      $menu->Post(@_)
+	      $users->current($t->get($start,$end));
+	      $menu->Post(@_);
 	    },
 	    $user_popup,
 	    Ev('X'),Ev('Y')]
@@ -204,6 +217,21 @@ $main->bind(ref($text->Subwidget('scrolled')),'<3>'=>'');
 my $msg = $main->Label(-relief=>'groove',
 		       -textvariable=>\$channel_name
 		      )->pack(-side=>'top',-fill=>'x');
+
+
+##################################
+# configure edit menu
+##################################
+$edit_menu->cget(-menu)->entryconfigure('Cut',
+					  -command => sub { $text->clipboardColumnCut}
+					 );
+$edit_menu->cget(-menu)->entryconfigure('Copy',
+					  -command => sub { $text->clipboardColumnCopy }
+					);
+$edit_menu->cget(-menu)->entryconfigure('Clear',
+					  -command => sub { $text->delete('sel.first','sel.last') }
+					);
+
 
 ##################################
 # entry for typing public messages
@@ -217,12 +245,19 @@ $entry->bind('<KeyPress-Return>',[\&handle_return,$text]);
 ##################################
 $frame3->Label(-textvariable=>\$stats,-relief=>'groove')->pack(-side=>'right');
 $frame3->Label(-text=>'Server Stats:')->pack(-side=>'right');
-$stats = ' ';
 
 $frame3->Label(-text=>'Status:')->pack(-side=>'left');
 $frame3->Label(-textvariable=>\$status,-relief=>'groove')->pack(-side=>'left');
-$status = 'disconnected';
 
+my $f31 = $frame3->Frame->pack(-side=>'left',-expand=>1);
+
+$f31->Label(-text=>'Pending Downloads:')->pack(-side=>'left');
+$f31->Label(-textvariable=>\$downloads,-relief=>'groove')->pack(-side=>'left');
+
+$f31->Label(-text=>'Pending Uploads:')->pack(-side=>'left');
+$f31->Label(-textvariable=>\$uploads,-relief=>'groove')->pack(-side=>'left');
+
+$main->idletasks;
 login($main);
 MainLoop;
 print "done\n";
@@ -230,40 +265,47 @@ print "done\n";
 sub logout {
   my $widget = shift;
   return unless $nap;
+  $songwindow->abort if defined $songwindow;
   $nap->disconnect;
 }
 
 sub login {
   my $widget = shift;
-  return if $nap;
-  $userport ||= 6699;
-  $login_dialog ||= create_login_dialog();
-  return unless 'Connect' eq $login_dialog->Show;
+  require MP3::TkNapster::Login;
 
+  $login ||= MP3::TkNapster::Login->new($widget);
+  return unless 'Connect' eq $login->show;
   $text->delete('1.0','end');
   $status= "Connecting...";
   $widget->idletasks;
-  my ($addr,$meta) = @{$SERVERS{$server}};
+  my ($addr,$meta) = $login->server;
   my @args = $meta ? (-metaserver=>$addr) : (-server=>$addr);
 
   unless ($nap = MP3::Napster->new(@args,-tkmain=>$widget)) {
     $status = "Can't connect: ".MP3::Napster->error;
     return;
   }
+  $nap->debug(1);
+  $nap->download_dir('./tmp');
   setup_callbacks($nap);
-  if ($newuser) {
+  if ($login->newuser) {
     $status = "Requesting nickname...";
-    $nap->register($nickname,$password,{link=>$user_linkspeed,port=>$userport});
+    $nap->register($login->nickname,
+		   $login->password,
+		   {link=>$login->link,port=>$login->port});
   } else {
     $status = "Logging in...";
-    $nap->login($nickname,$password,$user_linkspeed,$userport);
+    $nap->login($login->nickname,
+		$login->password,
+		$login->link,
+		$login->port);
   }
 }
 
 sub setup_callbacks {
   my $n = shift;
 
-  $n->callback($_,\&debug) for (0..900);
+  $n->callback($_,\&debug) for (0..900,2000..2007,9999);
   $n->callback(MOTD,\&motd);
   $n->callback(CHANNEL_MOTD,\&channel_motd);
   $n->callback(PONG,\&pong);
@@ -274,12 +316,16 @@ sub setup_callbacks {
   $n->callback(USER_DEPARTS,\&joins_parts);
   $n->callback(DISCONNECTED,\&handle_disconnect);
   $n->callback(LOGIN_ACK,\&handle_login);
-  $n->callback(REGISTRATION_ACK,\&handle_registration);
+  $n->callback(TRANSFER_STARTED,\&transfer_started);
+  $n->callback(TRANSFER_IN_PROGRESS,\&transfer_in_progress);
+  $n->callback(TRANSFER_STATUS,\&transfer_in_progress);
+  $n->callback(TRANSFER_DONE,\&transfer_done);
 
   $n->callback(ALREADY_REGISTERED,
 		 sub {
 		   $status="Already registered";
-		   $text->insert('end',"User $nickname is already registered\n",'error');
+		   my $nick = $login->nickname;
+		   $text->insert('end',"User $nick is already registered\n",'error');
 		   $nap->disconnect;
 		   undef $nap;
 		 });
@@ -287,6 +333,22 @@ sub setup_callbacks {
 		 sub {
 		   $status="ERROR: $_[2]";
 		   $text->insert('end',"$_[2]\n",'error');
+		 });
+  $n->callback(LOGIN_ERROR,
+		 sub {
+		   $status="ERROR: $_[2]";
+		   $text->insert('end',"$_[2]\n",'error');
+		 });
+  $n->append_callback(QUEUE_LIMIT,
+		      sub {
+			my $e = $nap->error;
+			$text->insert('end',"QUEUE LIMIT: $e\n",'error');
+			alert($e);
+		      });
+  $n->callback(INVALID_NICKNAME,
+		 sub {
+		   $status="Invalid nickname.  Try another.";
+		   $text->insert('end',"$status\n",'error');
 		 });
   $n->callback(INVALID_ENTITY,
 		 sub {
@@ -308,7 +370,8 @@ sub setup_callbacks {
 		 sub {
 		   my ($server,$code,$user) = @_;
 		   my $channel = channel($user->current_channel);
-		   $USERS{$channel}{$user} = $user;;
+		   $MEMBERS{$channel}{$user} = $user;
+		   $users->add($user);
 		 }
 		);
   $n->callback(CHANNEL_USER_END,
@@ -370,7 +433,8 @@ sub setup_callbacks {
 		   $current_channel = channel($nap->channel);
 		   $channel_name="$current_channel: " . $CHANNELS{$current_channel}->topic
 		     if $current_channel;
-		   delete $USERS{$c};
+		   $users->delete(keys %{$MEMBERS{$c}});
+		   delete $MEMBERS{$c};
 		   $current_channels = 'Discussion: '.channel_list();
 		   adjust_userlist();
 		   $status = 'Connected.';
@@ -383,23 +447,18 @@ sub setup_callbacks {
 }
 
 sub searchdone {
-  $status = 'Connected'; 
-  $searchstatus = "Search done $searchfound found"
+  $status = 'Connected';
+  $songwindow && $songwindow->searchdone;
 }
 
 sub handle_login {
   $status = "Connected $_[2]";
+  $users = new MP3::TkNapster::Users;
   $file_menu->cget(-menu)->entryconfigure(0,-state => 'disabled');
   $file_menu->cget(-menu)->entryconfigure(1,-state => 'normal');
   $search_menu->configure(-state => 'normal');
   $status = "Connected. Fetching channels...";
   $_[0]->channels;
-}
-
-sub handle_registration {
-  $status = "Sending new user information...";
-  $nap->new_login;
-  $nap->new_info;
 }
 
 sub handle_disconnect {
@@ -410,7 +469,8 @@ sub handle_disconnect {
     $main->cget('menu')->delete('Channels');
     %CHANNELS = ();
     %JOINED_CHANNELS = ();
-    %USERS = ();
+    %MEMBERS = ();
+    undef $users;
     $current_channels = 'Discussion: '.channel_list();
     $current_channel = '';
     adjust_userlist();
@@ -419,7 +479,12 @@ sub handle_disconnect {
   undef($nap);
   undef $channel_menu;
   $status = "disconnected";
-  $stats = ' ';
+  $stats = 'none';
+  if (defined $songwindow) {
+    $songwindow->clear_songs();
+    $songwindow->withdraw;
+  }
+  $songwindow->abort() if defined $songwindow;
 }
 
 sub set_channel {
@@ -446,7 +511,8 @@ sub channel_list {
 sub debug {
   my($server,$ec,$message) = @_;
   my $event = $server->event;
-  warn $server->event . ": $message\n";
+  $event .= ": $message" if defined $message;
+  warn $event,"\n";
 };
 
 sub motd {
@@ -499,13 +565,15 @@ sub joins_parts {
 		  "$user"       => [qw(nickname joins_parts)],
 		  " has joined sharing $sharing files on a $link line\n"
 		                => 'joins_parts');
-    $USERS{$channel}{$user} = $user;
+    $MEMBERS{$channel}{$user} = $user;
+    $users->add($user);
   } else {
     $text->insert('end',
 		  "[$channel] " => 'channel',
 		  "$user"=>[qw(nickname joins_parts)],
 		  " has departed\n" =>'joins_parts');
-    delete $USERS{$channel}{$user};
+    delete $MEMBERS{$channel}{$user};
+    $users->delete($user);
   }
   $text->see('end');
   adjust_userlist() if $channel eq $current_channel;
@@ -528,9 +596,9 @@ sub channel {
 sub adjust_userlist {
   $user_list->delete(0,'end');
   my $c = $current_channel;
-  $current_channel_menu->configure(-options=> [sort keys %USERS]);
+  $current_channel_menu->configure(-options=> [sort keys %MEMBERS]);
   return unless $c;
-  my @users = sort {lc $a cmp lc $b} values %{$USERS{$c}};
+  my @users = sort {lc $a cmp lc $b} values %{$MEMBERS{$c}};
   $user_list->insert('end',@users);
   $current_channel = $c;
   $channel_name = channel($c)->topic;
@@ -549,50 +617,12 @@ sub set_select {
   my $text = shift;
   my $xy = $Tk::event->xy;
   my $user = $text->get("$xy wordstart","$xy wordend");
-  warn $user,"\n";
-}
-
-sub browse_user {
-  return unless $USER;
-  $status = "browsing $USER...";
-  clear_songs();
-  $nap->browse($USER);
-}
-
-sub ping_user {
-  return unless $USER;
-  $status = "pinging $USER...";
-  $nap->ping($USER);
-}
-
-sub info_user {
-  return unless $USER;
-  $status = "fingering $USER...";
-  $nap->whois($USER);
-}
-
-sub whisper_user {
-  return unless $USER;
-  my $d = $main->DialogBox(-title=>'Whisper',
-			   -buttons=>['OK','Cancel'],
-			   -default_button => '');
-  $d->add('Label',
-	  -text=>"Message to $USER")->pack(-side=>'left');
-  my $e = $d->add('Entry',
-		  -width          => 80,
-		 )->pack(-side=>'left');
-  $e->bind('<KeyPress-Return>',sub { $d->Subwidget('B_OK')->invoke });
-  $e->focus;
-  my $button = $d->Show;
-  return unless $button eq 'OK';
-  $status = "Sending message to $USER...";
-  $nap->private_message($USER,$e->get);
 }
 
 sub whois {
   my ($server,$code,$user) = @_;
   my $profile = $user->profile;
-  $USER = $user;
+  $users->current($user);
   unless ($info_dialog) {
     $info_dialog = $main->Dialog(
 				 -title => $user,
@@ -605,9 +635,9 @@ sub whois {
 			  -text=>$profile);
   my $button = $info_dialog->Show;
   $status = 'Connected';
-  browse_user()  if $button eq 'Browse';
-  ping_user()    if $button eq 'Ping';
-  whisper_user() if $button eq 'Whisper';
+  $users->browse_user()  if $button eq 'Browse';
+  $users->ping_user()    if $button eq 'Ping';
+  $users->whisper_user() if $button eq 'Whisper';
 }
 
 sub pong {
@@ -619,253 +649,65 @@ sub pong {
   $status = 'Connected';
 }
 
-sub clear_songs {
-  %SONGS = ();
-  $searchfound = 0;
-  $searchstatus = 'Ready';
-  $songtext->delete('1.0','end') if $songtext;
+sub alert {
+  my $message = shift;
+  unless ($alert_dialog) {
+    $alert_dialog = $main->Dialog(
+				  -title => 'Alert',
+				  -buttons=>['OK'],
+				  -default_button => 'OK',
+				);
+  }
+  $alert_dialog->configure(-text=>$message);
+  $alert_dialog->Show;
 }
 
-sub create_login_dialog {
-  my $ld = $main->DialogBox(-title   => 'Login',
-			    -buttons => ['Connect','Cancel'],
-			    -default_button => 'Connect');
-  $ld->add('Label',-text=>'Log In',-font=>$bold)->pack(-fill=>'x');
-  my $f  = $ld->add('Frame')->pack(-side=>'top',-fill=>'both',-expand=>1);
-  my $f1 = $f->Frame->pack(-side=>'left',-fill=>'both',-expand=>1);
-  my $f2 = $f->Frame->pack(-side=>'left',-fill=>'both',-expand=>1);
-  my $f3 = $f->Frame->pack(-side=>'right',-fill=>'x',-expand=>1);
-
-  $f1->Label(-text=>'Server:',-relief=>'groove')->pack(-side=>'top',-fill=>'x',-expand=>1);
-  $f1->Label(-text=>'Nickname:',-relief=>'groove')->pack(-side=>'top',-fill=>'x',-expand=>1);
-  $f1->Label(-text=>'Password:',-relief=>'groove')->pack(-side=>'top',-fill=>'x',-expand=>1);
-  # this is optional, don't pack it
-  my $confirm_l = $f1->Label(-text=>'Confirm:',-relief=>'groove');
-
-  my @servers;
-  while (<DATA>) {
-    next if /^\#/;
-    chomp;
-    my ($label,$addr,$meta) = /^(\w+)\s+([\w.]+:\d+)\s+(\d+)$/ or next;
-    $server ||= $label;
-    push @servers,$label;
-    $SERVERS{$label} = [$addr,$meta];
-  }
-  $f2->Optionmenu(-variable  => \$server,
-		  -options   => \@servers,
-		  -width     => 15)->pack(-side=>'top',-fill=>'x',-expand=>1);
-
-  my $n = $f2->Entry(-textvariable=>\$nickname,
-		     -width=>20)->pack(-side=>'top',-fill=>'x',-expand=>1);
-  my $p = $f2->Entry(-textvariable=>\$password,-width=>20,-show=>'*')->pack(-side=>'top',-fill=>'x',-expand=>1);
-
-  # don't pack this
-  my $confirm_e = $f2->Entry(-width=>20,-show=>'*');
-
-  my $do_check = sub {
-    my $button = $ld->Subwidget('B_Connect');
-    if ($newuser) {
-      $button->configure(-state => $n->get()
-			 && $p->get() ne ''
-			 && $p->get() eq $confirm_e->get() 
-			 ? 'normal' : 'disabled');
-    } else {
-      $button->configure(-state => $n->get() && $p->get() ? 'normal' : 'disabled');
-    }
-  };
-
-  $_->bind('<KeyPress>',$do_check) foreach ($n,$p,$confirm_e);
-
-  # link speed option menu
-  ($linklabel = $LINK{$user_linkspeed = DEFAULT_SPEED}) =~ s/^LINK_//;
-  my @link_speed;
-  for (sort {$a<=>$b} keys %LINK) {
-    (my $label = $LINK{$_}) =~ s/^LINK_//;
-    push @link_speed,[$label=>$_];
-  }
-
-  my $linkspeed = $f3->Frame->pack(-side=>'top',-fill=>'both',-expand=>1);
-  $linkspeed->Optionmenu(-variable     => \$linklabel,
-			 -options      => \@link_speed,
-			 -width        => 8,
-			 -command      => sub {
-			   $user_linkspeed = $linklabel;
-			   $linklabel = $LINK{$linklabel};
-			   $linklabel =~ s/^LINK_//;
-			 },
-			)->pack(-side=>'right');
-  $linkspeed->Label(-text=>"Link Speed: ",-relief=>'groove')->pack(-side=>'right');
-
-  my $port = $f3->Frame->pack(-side=>'top',-fill=>'x',-expand=>1);
-  $port->Entry(-textvariable=>\$userport,-width=>6)->pack(-side=>'right');
-  $port->Label(-text=>'Port: ',-relief=>'groove')->pack(-side=>'right');
-
-  my $d = $ld->add('Checkbutton',
-		   -text         => 'Register as new user',
-		   -variable     => \$newuser,
-		   -command      => sub {
-		     if ($newuser) {
-		       $confirm_l->pack;
-		       $confirm_e->pack;
-		     } else {
-		       $confirm_l->packForget;
-		       $confirm_e->packForget;
-		     }
-		   }
-		  )->pack(-side=>'top',-expand=>'x');
-  $ld->Subwidget('B_Connect')->configure(-state=>'disabled');
-  $ld;
+sub shared_files {
+  require MP3::TkNapster::SharedFiles;
+  $sharedwindow ||= MP3::TkNapster::SharedFiles->new;
+  $sharedwindow->show;
 }
+
+# Clear the song list
+sub clear_songs {  $songwindow && $songwindow->clear_songs }
 
 sub add_song {
-  $songwindow ||= songwindow($main);
-  $songwindow->deiconify;
-  $songwindow->raise;
-  return unless @_;
+  require MP3::TkNapster::Songlist;
+  $songwindow ||= MP3::TkNapster::Songlist->new($main,\$nap);
 
-  my ($server,$ec,$song) = @_;
-  $searchfound++;
-  $searchstatus = "Searching...$searchfound found";
-
-  my $link = $song->link_code;
-  my $owner = $song->owner;
-  if ($link == LINK_UNKNOWN) {
-    foreach (keys %USERS) {
-      if (my $u = $USERS{$_}{$owner}) {
-	$link = $u->link_code;
-	last;
-      }
-    }
-    $song->link_code($link);
+  # hack to fix missing link codes
+  if (my ($server,$ec,$song) = @_) {
+    $song->link_code($users->object($song->owner)->link_code)
+      if ($song->link_code == LINK_UNKNOWN and $users->object($song->owner));
   }
-  $link = $song->link;
-  $link =~ s/^LINK_//;
-  $link = "?" if $link eq 'UNKNOWN';
-
-  unless (%SONGS) { # beginning
-    $songtext->insert('end',"Owner\tBitrate\tSize\tLink\tTitle\n\n",'header');
-  }
-
-  $SONGS{$song->owner,$song->name} = $song;
-  my $string = sprintf "%s\t%3dkbps\t%6.2fM\t%6s\t%s\n",
-    $song->owner,$song->bitrate,$song->size/1E6,$link,$song->name;
-  my $index = bsearch($songtext,$song);
-  $songtext->insert($index,$string,$link);
-  $main->idletasks;
+  $songwindow->add_song(@_);
 }
 
-sub songwindow {
-  my $main = shift;
-  my $tl   = $main->Toplevel(-title=>'Song Browser',
-			     -takefocus => 1);
-  $tl->withdraw;
-  $searchstatus = 'Ready';
 
-  if (-e FIND_ICON) {
-    my $image = $main->Pixmap(-file=>FIND_ICON);
-    $tl->iconimage($image);
+sub transfer_started {
+  my ($nap,$code,$transfer) = @_;
+  $transfer->interval(50000);
+  $songwindow->add_transfer($transfer) if defined $songwindow;
+  if ($transfer->direction eq 'download') {
+    $downloads++;
+  }  else {
+    $uploads++;
   }
-
-  # frame for controls
-  my $f1 = $tl->Frame->pack(-side=>'top',-fill=>'x');
-  $f1->Label(-text=>'Search: ')->pack(-side=>'left');
-
-  my $e = $f1->Entry(-textvariable=>\$search)->pack(-side=>'left',-fill=>'x',-expand=>1);
-  $e->bind('<KeyPress-Return>',sub {
-	     return unless $e->index('end');
-	     clear_songs();
-	     $searchstatus = 'Searching...';
-	     $nap->search($e->get());
-	   });
-
-  my $clear_b  = $f1->Button(-text     => 'Clear')->pack(-side=>'left');
-  my $search_b = $f1->Button(-text     => 'Search',
-			     -state    => 'disabled',
-			     -command  => sub { clear_songs();
-						$nap->search($e->get()) },
-			    )->pack(-side=>'left');
-  $f1->Button(-text=>'Close',-command=>[$tl => 'withdraw'])->pack(-side=>'right',-anchor=>'e');
-
-
-  my $f2 = $tl->LabFrame(-label=>'Search Results',
-			   -labelside=>'acrosstop')->pack(-side=>'top',-fill=>'both',-expand=>1);
-  my $s = $f2->Scrolled('ROText',
-			-background => 'black',
-			-foreground => 'yellow',
-			-highlightcolor=>'blue',
-			-scrollbars => 'soe',
-			-font       => $normal,
-			-cursor     => 'hand2',
-			-wrap       => 'none',
-			-tabs=>[qw(2.0i right 2.8i right 3.7i right 4.2i)]
-		       )->pack(-fill=>'both',-expand=>1);
-  $songtext = $s->Subwidget('rotext');
-  $songtext->tag(configure=>$_,-foreground=>'gray')   foreach qw(? UNKNOWN);
-  $songtext->tag(configure=>$_,-foreground=>'red')    foreach qw(14K 28K 33K);
-  $songtext->tag(configure=>$_,-foreground=>'yellow') foreach qw(56K 64K);
-  $songtext->tag(configure=>$_,-foreground=>'green')  foreach qw(128K CABLE DSL);
-  $songtext->tag(configure=>$_,-foreground=>'green',-font=>$bold)  foreach qw(T1 T3);
-  $songtext->tag(configure=>'header',
-		 -foreground=>'yellow',
-		 -underline=>1);
-  $songtext->tag(configure=>'selected',
-		 -font=>$italic,
-		 -background=>'blue');
-  $songtext->bind('<1>',[
-			 sub {
-			   my $w = shift;
-			   my $xy = $Tk::event->xy;
-			   $w->tagRemove('selected','1.0','end');
-			   $w->tagAdd('selected',"$xy linestart","$xy lineend");
-			 }]);
-  $songtext->bind("<B1-Motion>",sub {shift->tagRemove('selected','1.0','end')});
-
-  $tl->Label(-textvariable => \$searchstatus,
-	     -relief       => 'ridge')->pack(-side=>'top',-fill=>'x');
-
-  $tl->protocol(WM_DELETE_WINDOW=>[$tl => 'withdraw']);
-
-  $clear_b->configure(-command  => \&clear_songs );
-
-  $e->bind('<KeyPress>',sub {
-	     $search_b->configure(-state => $e->index('end') ? 'normal' : 'disabled');
-	   });
-
-  $e->focus;
-  $tl;
 }
 
-sub bsearch {
-  my ($t,$s) = @_;
-  my ($start,$stop,$pivot) = (3,$t->index('end')-2,3);
-  while ($start <= $stop) {
-    $pivot = int(($start + $stop)/2);
-    my $line  = $t->get("$pivot.0","$pivot.end");
-    chomp $line;
-    my ($owner,$bitrate,$size,$link,$title) = split "\t",$line;
-    $title =~ s/\s+$//;
-    my $item = $SONGS{$owner,$title};
-    my $cmp = do_cmp($s,$item);
-    if ($cmp == 0) {
-      $start = $pivot;
-      last;
-    } elsif ($cmp > 0) {
-      $start = $pivot + 1;
-    } else {
-      $stop = $pivot - 1;
-    }
-  }
-  return "$start.0";
+sub transfer_in_progress {
+  my ($nap,$code,$transfer) = @_;
+  $songwindow->update_transfer($transfer) if defined $songwindow;
 }
 
-sub do_cmp {
-  my ($song1,$song2) = @_;
-  my $cmp;
-  if (defined $comparison) {
-    $c_direction ||= +1;
-    $cmp = ($c_direction * ($song1->$comparison <=> $song2->$comparison))
+sub transfer_done {
+  my ($nap,$code,$transfer) = @_;
+  $songwindow->done_transfer($transfer) if defined $songwindow;
+  if ($transfer->direction eq 'download') {
+    $downloads--;
+  }  else {
+    $uploads--;
   }
-  $cmp || lc($song1->title) cmp lc($song2->title);
 }
 
 __DATA__
