@@ -22,6 +22,7 @@ print OUT <<'!NO!SUBS!';
 # teeny tiny napster server for use in regression tests
 
 use strict;
+require 5.6.0;
 use IO::Select;
 use IO::Socket;
 

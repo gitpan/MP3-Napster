@@ -7,6 +7,8 @@ use MP3::Napster::MessageCodes qw(TRANSFER_IN_PROGRESS TRANSFER_DONE TRANSFER_AB
 				 DOWNLOADING UPLOADING DOWNLOAD_COMPLETE UPLOAD_COMPLETE);
 use IO::File;
 use Carp 'croak';
+use vars '$VERSION';
+$VERSION = 1.00;
 
 use overload '""'  => 'asString',
              fallback => 1;
@@ -37,6 +39,7 @@ sub new {
   # direction is 'upload' or 'download'
   my ($server,$nickname,$song,$file,$direction) = @_;
 
+  no strict 'refs';
   my $fh;
   if (defined(fileno($file))) {
     $fh = $file;

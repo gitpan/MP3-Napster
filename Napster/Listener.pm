@@ -63,10 +63,10 @@ sub change_port {
 # this just enqueues a new Connection object
 sub in {
   my $self = shift;
-  return 0E0 unless $self->can_read();  # ???
+  return '0E0' unless $self->can_read();  # ???
   my $sock = $self->infh->accept;
   if (!$sock) {
-    return 0E0 if $! == EWOULDBLOCK;
+    return '0E0' if $! == EWOULDBLOCK;
     $self->eof(1);
   } else { # we have an incoming connection
     my $connected = MP3::Napster::PeerToPeer->new($sock,$self->eventloop);

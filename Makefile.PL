@@ -2,7 +2,7 @@ use ExtUtils::MakeMaker;
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 
-require 5.00503;
+require 5.6.0;
 
 eval { require Digest::MD5 }   || die "You must have Digest::MD5 installed.  Can't continue";
 eval { require MP3::Info }     || die "You must have MP3::Info installed.  Can't continue";

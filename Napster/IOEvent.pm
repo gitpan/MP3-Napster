@@ -147,7 +147,7 @@ sub in {
   my $bytes = sysread($self->infh,$self->{inbuffer},READSIZE,length $self->{inbuffer});
   warn "read $bytes bytes\n" if $self->eventloop->debug > 1;
   if (!$bytes) {
-    return 0E0 if $! == EWOULDBLOCK;    # this is OK
+    return '0E0' if $! == EWOULDBLOCK;    # this is OK
     $self->eof(1);                      # end of file or error
     $self->adjust_io;
     return;
@@ -164,7 +164,7 @@ sub out {
   my $bytes = syswrite($self->outfh,$self->{outbuffer});
   warn "wrote $bytes bytes\n" if defined($bytes) and $self->eventloop->debug > 1;
   if (!defined $bytes) {
-    return 0E0 if $! == EWOULDBLOCK;
+    return '0E0' if $! == EWOULDBLOCK;
     $self->handle_pipe if $! == EPIPE;
     $self->adjust_io;
     return;

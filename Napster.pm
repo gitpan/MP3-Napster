@@ -1,6 +1,7 @@
 package MP3::Napster;
 
 use strict;
+require 5.6.0;  # for IO::Socket fixes
 use vars qw($VERSION %FIELDS %RDONLY $LAST_ERROR);
 use base qw(MP3::Napster::IOLoop MP3::Napster::Base);
 use Carp 'croak';
@@ -16,7 +17,7 @@ use MP3::Napster::PeerToPeer;
 use MP3::Napster::TransferRequest;
 use Exporter;
 
-$VERSION = '2.00';
+$VERSION = '2.01';
 
 %FIELDS = map {$_=>undef} qw(nickname email server channel registry 
 			     listener download_dir transfer_timeout attributes

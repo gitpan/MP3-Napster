@@ -1,3 +1,6 @@
+2.01	Thu Dec  7 12:37:26 EST 2000
+	- discovered a misfeature in IO::Socket::INET in 5.00503.  Now requires 5.6.0.
+	
 2.0	Thu Dec  7 12:01:26 EST 2000
 	- rewrote to use non-blocking I/O
 	- beginnings of PerlTk front end
