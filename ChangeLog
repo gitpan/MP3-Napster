@@ -1,0 +1,11 @@
+2000-03-14  Lincoln Stein  <lstein@presto.cshl.org>
+
+	* version 0.96
+
+	* Fixed problem which caused commands to fail when on loaded napster servers.
+
+	* napster.pl continues to disconnect from server when left on overnight.  Possibly
+	there's some "keepalive" message that I don't know about.
+
+0.01  Sun Feb  6 12:35:35 2000
+	- original version; created by h2xs 1.19

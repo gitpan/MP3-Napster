@@ -18,7 +18,7 @@ use vars qw($VERSION @ISA @EXPORT @EXPORT_OK $DEBUG_LEVEL %FIELDS %RDONLY);
 
 $SIG{PIPE} = 'IGNORE';
 
-$VERSION = '0.95';
+$VERSION = '0.96';
 $DEBUG_LEVEL = 0;
 
 @ISA = qw(Exporter MP3::Napster::Base);
@@ -933,7 +933,7 @@ sub recv {
   # read a 4-byte message from the input stream
   warn "recv(): reading message\n" if $DEBUG_LEVEL > 2;
   my $data;
-  my $bytes = sysread($sock,$data,4);
+  my $bytes = read($sock,$data,4);
   $bytes += 0;
   warn "recv(): got $bytes bytes\n" if $DEBUG_LEVEL > 2;
   warn "recv(): end of file\n"  if !$bytes and $DEBUG_LEVEL > 2;
@@ -945,15 +945,12 @@ sub recv {
     unless $type >= 0 and $type <= 2000;  # allowable range for message
 
   # read the rest of the data
-  if (( my $bytes = $length) > 0) {
-    $data = '';
-    while ($bytes > 0) {
-      return unless my $got = sysread($sock,$data,$bytes,length $data);
-      $bytes -= $got;
-    }
+  if ($length > 0) {
+    return unless read($sock,$data,$length);
     return ($type,$data);
+  } else {
+    return ($type);
   }
-  return $type;
 }
 
 # send a message and wait for list of result codes
